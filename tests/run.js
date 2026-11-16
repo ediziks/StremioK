@@ -387,10 +387,29 @@ function loadBrowserScript(file, extraGlobals) {
             set: function (k, v) { storeData[k] = v; },
             remove: function (k) { delete storeData[k]; }
         },
+        bigStore: {
+            get: function (k) {
+                return Promise.resolve(Object.prototype.hasOwnProperty.call(storeData, k) ? storeData[k] : null);
+            },
+            set: function (k, v) { storeData[k] = v; return Promise.resolve(true); },
+            remove: function (k) { delete storeData[k]; return Promise.resolve(); }
+        },
         log: function () {},
         problem: function (e) { return (e && e.message) || String(e); },
         parseUrl: function (u) {
-            try { return new URL(u); } catch (e) { return null; }
+            try {
+                const parsed = new URL(u);
+                return {
+                    href: parsed.href,
+                    scheme: parsed.protocol.replace(/:$/, ''),
+                    host: parsed.hostname,
+                    port: parsed.port,
+                    path: parsed.pathname,
+                    query: parsed.search.replace(/^\?/, ''),
+                    pathname: parsed.pathname,
+                    search: parsed.search
+                };
+            } catch (e) { return null; }
         },
         sanitizeHeaders: function (h) { return h || {}; },
         t: function (s) { return s; },
@@ -503,9 +522,101 @@ async function run() {
         assert.strictEqual(results[3].error.message, 'err4');
     });
 
-    // 3. Placeholder unit tests (failing with 'not implemented' until implemented in Tasks 2-5)
-    await runTest('xtLiveUrl (Xtream Live URL builder)', () => {
-        assert.fail('not implemented');
+    // 3. Xtream Live API, category filter, and Live-only toggle (Task 2)
+    await runTest('xtLiveUrl (Xtream Live record, category filter & IPTV.load)', async () => {
+        const svc = loadService();
+        const catMap = { '10': 'Sports', '20': 'News' };
+        const recTs = svc.xtLiveRecord({
+            stream_id: 101,
+            name: '  ESPN HD  ',
+            category_id: '10',
+            stream_icon: 'https://img.example.com/espn.png',
+            epg_channel_id: 'espn.us',
+            tv_archive: 1,
+            tv_archive_duration: 7
+        }, catMap, 'http://tv.example.com:8080/', 'alice', 'secret', 'ts');
+
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(recTs)), {
+            id: 101,
+            name: 'ESPN HD',
+            group: 'Sports',
+            logo: 'https://img.example.com/espn.png',
+            tvgId: 'espn.us',
+            url: 'http://tv.example.com:8080/live/alice/secret/101.ts',
+            archive: true,
+            archiveDays: 7
+        });
+
+        const recHls = svc.xtLiveRecord({
+            stream_id: '202',
+            name: 'BBC World',
+            category_id: '20',
+            tv_archive: 0
+        }, catMap, 'http://tv.example.com:8080', 'alice', 'secret', 'hls');
+        assert.strictEqual(recHls.url, 'http://tv.example.com:8080/live/alice/secret/202.m3u8');
+        assert.strictEqual(recHls.archive, false);
+        assert.strictEqual(recHls.archiveDays, 0);
+        assert.strictEqual(svc.xtLiveRecord({ stream_id: 0, name: 'Bad' }, catMap, 'http://x', 'u', 'p', 'ts'), null);
+
+        // Streaming category filter drops unselected categories during streaming
+        const catSet = { '10': true };
+        const streamed = [];
+        const feed = svc.xtvItems(function (o) {
+            if (!catSet[String(o.category_id || '')]) { return; }
+            const r = svc.xtLiveRecord(o, catMap, 'http://tv.example.com:8080', 'alice', 'secret', 'ts');
+            if (r) { streamed.push(r); }
+        });
+        const payload = JSON.stringify([
+            { stream_id: 1, name: 'Keep Sports', category_id: '10', tv_archive: 1, tv_archive_duration: 3 },
+            { stream_id: 2, name: 'Drop News', category_id: '20', tv_archive: 0 }
+        ]);
+        feed(payload.slice(0, 35));
+        feed(payload.slice(35));
+        assert.strictEqual(streamed.length, 1);
+        assert.strictEqual(streamed[0].id, 1);
+        assert.strictEqual(streamed[0].group, 'Sports');
+
+        // Browser IPTV module: preserves groups/noVod, routes Xtream Live via YTPlay.xtliveList
+        let xtliveCalled = false;
+        const iptvCtx = loadBrowserScript('js/iptv.js', {
+            YTPlay: {
+                installMode: () => 'tizenbrew',
+                xtliveList: (base, user, pass, fmt, cats) => {
+                    xtliveCalled = true;
+                    assert.strictEqual(base, 'http://tv.example.com:8080');
+                    assert.strictEqual(user, 'alice');
+                    assert.strictEqual(pass, 'secret');
+                    assert.strictEqual(fmt, 'ts');
+                    assert.deepStrictEqual(cats, ['10']);
+                    return Promise.resolve({
+                        state: 'ready',
+                        at: 123456,
+                        count: 1,
+                        groups: 1,
+                        dropped: 0,
+                        channels: [recTs]
+                    });
+                }
+            }
+        });
+        const id = iptvCtx.IPTV.addXtream('http://tv.example.com:8080', 'alice', 'secret');
+        assert.ok(id);
+        assert.strictEqual(iptvCtx.IPTV.setPlaylistGroups(id, ['10']), true);
+        assert.strictEqual(iptvCtx.IPTV.setXtreamNoVod(id, true), true);
+
+        const pls = iptvCtx.IPTV.getPlaylists();
+        assert.strictEqual(pls.length, 1);
+        assert.strictEqual(pls[0].xtream, true);
+        assert.deepStrictEqual(pls[0].groups, ['10']);
+        assert.strictEqual(pls[0].noVod, true);
+
+        await iptvCtx.IPTV.load(true);
+        assert.strictEqual(xtliveCalled, true);
+        const chs = iptvCtx.IPTV.channels();
+        assert.strictEqual(chs.length, 1);
+        assert.strictEqual(chs[0].streamId, 101);
+        assert.strictEqual(chs[0].archive, true);
+        assert.strictEqual(chs[0].archiveDays, 7);
     });
 
     await runTest('catchupUrl (Xtream Catch-Up URL formatter)', () => {

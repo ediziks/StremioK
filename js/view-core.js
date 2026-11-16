@@ -378,6 +378,41 @@ var ViewParts = {};
             U.toast(U.t('Its channels now play as {format} (reading the account again…)', { format: fmt === 'hls' ? 'MPEG-TS' : 'HLS' }), 4000);
             renderSettings();
         };
+        var xtGroups = U.el('div', 'pill focusable modal-btn', U.t('Channel groups'));
+        xtGroups.__onselect = function () {
+            closeModal();
+            U.toast(U.t('Asking the server for its groups…'), 4000);
+            IPTV.xtreamGroups(playlist.id).then(function (list) {
+                if (!list.length) { U.toast(U.t('The server lists no groups'), 4000); return; }
+                pickMany(U.t('Groups to read from “{name}”', { name: label }), list.map(function (g) { return { key: g.id, label: g.name }; }), {
+                    on: playlist.groups, none: true,
+                    button: function (n) { return n ? U.tn(n, 'Read {n} group', 'Read {n} groups') : U.t('Read all groups'); }
+                }, function (keys) {
+                    Stremio.iptvSetPlaylistGroups(playlist.id, keys);
+                    refreshAddonRows('local:iptv');
+                    U.toast(U.t('Reading the account…'), 4000);
+                    renderSettings();
+                    Stremio.iptvReload(playlist.id).then(function () {
+                        refreshAddonRows('local:iptv');
+                        var st = Stremio.iptvStatus(playlist.id);
+                        U.toast(st.error ? U.t('Reload failed: {why}', { why: st.error }) : U.t('Loaded {n} channels', { n: st.count }), 4000);
+                        renderSettings();
+                    });
+                });
+            }, function (e) { U.toast(U.problem(e), 5000); });
+        };
+        var noVodOn = !!playlist.noVod;
+        var noVodBtn = U.el('div', 'pill focusable modal-btn', U.t('Movies & Series (VOD): {state}', { state: noVodOn ? U.t('Live TV only') : U.t('Included') }));
+        noVodBtn.__onselect = function () {
+            closeModal();
+            var next = !noVodOn;
+            Stremio.iptvSetXtreamNoVod(playlist.id, next);
+            if (typeof XtVod !== 'undefined' && XtVod.reload) { XtVod.reload(playlist.id); }
+            refreshAddonRows('local:xtvod');
+            refreshAddonRows('local:iptv');
+            U.toast(next ? U.t('Live TV only: Movies & Series hidden for this account') : U.t('Movies & Series included for this account'), 4000);
+            renderSettings();
+        };
         var groups = U.el('div', 'pill focusable modal-btn', U.t('Channel groups'));   // (a Stalker portal: the genres to read)
         groups.__onselect = function () {
             closeModal();
@@ -481,7 +516,7 @@ var ViewParts = {};
         row.appendChild(onoff);
         row.appendChild(edit);
         if (!playlist.off && typeof EPG !== 'undefined' && EPG.available && EPG.available()) { row.appendChild(guide); }
-        if (!playlist.off && fmt) { row.appendChild(format); }
+        if (!playlist.off && fmt) { row.appendChild(format); row.appendChild(xtGroups); row.appendChild(noVodBtn); }
         if (!playlist.off && IPTV.isStalker(playlist)) { row.appendChild(groups); }
         if (!playlist.off) { row.appendChild(reload); }
         row.appendChild(remove);

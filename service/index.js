@@ -2387,6 +2387,7 @@ function handle(req, res) {
         if (/^\/dlna\//.test(path)) { dlnaControl(req, res, path, parts[1], leaving); return; }   // (a DLNA media server: see dlnaControl)   // (a network folder's file, for the player: its ticket)   // (a network folder: see davControl)
         if (path === '/aiom/addons') { aiomControl(req, res, parts[1], leaving); return; }
         if (path === '/xtvod/list' || path === '/xtvod/find') { xtvControl(req, res, path, parts[1]); return; }   // (an Xtream account's films and series: see xtvControl)
+        if (path === '/xtlive/cats' || path === '/xtlive/list') { xtlControl(req, res, path, parts[1]); return; }   // (an Xtream account's live TV categories & channels: see xtlControl)
         if (path === '/stalker/list' || path === '/stalker/link' || path === '/stalker/genres' || path === '/stalker/vod' || path === '/stalker/play') { stalkerControl(req, res, path, parts[1], leaving); return; }   // (a Stalker portal: see stalkerControl)   // (AIOManager's addons: see aiomControl)   // (a live channel's sound repacked: see liveControl)   // (the phone's one-time page: see below)
         if (path === '/fsfile') {   // a USB file over HTTP, with Range: the player reads a big one from here (see fsfile in the header)
             var whyF = fsAllowed(req, parts[1]);
@@ -5236,7 +5237,7 @@ function xtvGet(url, onText, cb) {
 // title, written and read in small pieces (the service also relays live channels, YouTube and
 // guides: nothing here holds it up for long). Saved lists not used for XTV_FILE_MS are deleted.
 function xtvFile(key) { var d = tokenDir(); return d ? d + '/xtv-' + epgHash(key).toString(36) + '.jsonl' : null; }
-var _xtvSwept = false, XTV_FILES = /^xtv-[0-9a-z]+\.jsonl?(\.part)?$/;
+var _xtvSwept = false, XTV_FILES = /^xt[vl]-[0-9a-z]+\.jsonl?(\.part)?$/;
 function xtvSweep() {
     if (_xtvSwept) { return; }
     _xtvSwept = true;
@@ -5417,6 +5418,181 @@ function xtvControl(req, res, path, query) {
     // (its saved list on its way: a moment; the newest row doesn't need it)
     if (x.loading && !(path === '/xtvod/list' && !q.q && x.newest)) { x.waiters.push(answer); return; }
     answer();
+}
+
+// ---- Xtream Live TV (/xtlive/cats, /xtlive/list) ----
+var _xtl = Object.create(null);
+function xtLiveRecord(o, catMap, base, user, pass, fmt) {
+    if (!o || typeof o !== 'object') { return null; }
+    var id = +o.stream_id;
+    var name = String(o.name || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!(id > 0) || !name) { return null; }
+    var cid = String(o.category_id || '');
+    var group = (catMap && cid && catMap[cid]) ? String(catMap[cid]).replace(/\s+/g, ' ').trim().slice(0, 120) : 'Live TV';
+    var logo = String(o.stream_icon || '');
+    if (!/^https?:\/\//i.test(logo) || logo.length >= 600) { logo = ''; }
+    var tvgId = String(o.epg_channel_id || '').trim().slice(0, 200);
+    var ext = fmt === 'hls' ? 'm3u8' : 'ts';
+    var cleanBase = String(base || '').replace(/\/+$/, '');
+    return {
+        id: id,
+        name: name,
+        group: group,
+        logo: logo,
+        tvgId: tvgId,
+        url: cleanBase + '/live/' + encodeURIComponent(user) + '/' + encodeURIComponent(pass) + '/' + id + '.' + ext,
+        archive: +o.tv_archive === 1,
+        archiveDays: +o.tv_archive_duration || 0
+    };
+}
+function xtlFile(key) { var d = tokenDir(); return d ? d + '/xtl-' + epgHash(key).toString(36) + '.jsonl' : null; }
+function xtlSave(x) {
+    var f = xtlFile(x.key), fs = require('fs'), items = x.items, at = 0, failed = false, s;
+    if (!f) { return; }
+    try { s = fs.createWriteStream(f + '.part', { mode: 384 }); } catch (e) { return; }
+    s.on('error', function (e) { failed = true; log('Xtream live list not saved (' + (e.code || e.message) + ')'); });
+    s.write(JSON.stringify({ key: x.key, at: x.at, groups: x.groups || 0, dropped: x.dropped || 0 }) + '\n');
+    (function more() {
+        if (failed) { return; }
+        var lines = [], end = Math.min(items.length, at + XTV_SLICE);
+        for (; at < end; at++) { lines.push(JSON.stringify(items[at])); }
+        var room = s.write(lines.length ? lines.join('\n') + '\n' : '');
+        if (at >= items.length) {
+            s.end(function () {
+                if (failed) { return; }
+                if (_xtl[x.key] !== x) { fs.unlink(f + '.part', noop); return; }
+                fs.rename(f + '.part', f, function (e) { if (!e && x.items === items) { x.saved = true; } });
+            });
+            return;
+        }
+        if (room) { setTimeout(more, 0); } else { s.once('drain', more); }
+    })();
+}
+function xtlLoad(x, cb) {
+    var f = xtlFile(x.key), fs = require('fs'), items = [], meta = null, first = true, rest = '', dec = new StringDecoder('utf8'), s;
+    cb = once(cb);
+    if (!f) { cb(); return; }
+    try { s = fs.createReadStream(f, { highWaterMark: 65536 }); } catch (e) { cb(); return; }
+    function line(l) {
+        if (!l) { return; }
+        var o = null;
+        try { o = JSON.parse(l); } catch (e) { o = null; }
+        if (first) {
+            first = false;
+            if (!o || o.key !== x.key) { items = null; try { s.destroy(); } catch (e2) {} cb(); return; }
+            meta = o;
+        } else if (o && items) { items.push(o); }
+    }
+    s.on('data', function (c) {
+        var ls = (rest + dec.write(c)).split('\n');
+        rest = ls.pop();
+        ls.forEach(line);
+    });
+    s.on('end', function () { line(rest); if (items && meta) { cb(items, +meta.at || 0, +meta.groups || 0, +meta.dropped || 0); } else { cb(); } });
+    s.on('error', function () { cb(); });
+}
+function xtlFetchCats(base, user, pass, cb) {
+    var cats = [];
+    var url = base + '/player_api.php?username=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(pass) + '&action=get_live_categories';
+    var feed = xtvItems(function (o) {
+        if (!o || typeof o !== 'object') { return; }
+        var id = o.category_id != null ? String(o.category_id).trim() : '';
+        var name = String(o.category_name || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        if (id && name) { cats.push({ id: id, name: name }); }
+    });
+    xtvGet(url, feed, function (err) {
+        if (err) { cb(err); return; }
+        cb(null, cats);
+    });
+}
+function xtlControl(req, res, path, query) {
+    if (!entryAllowed(req, query)) { send(res, 403, 'text/plain', 'not allowed (token)'); return; }
+    var q = {};
+    (query || '').split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) { try { q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (e) {} } });
+    var base = String(q.base || '').replace(/\/+$/, '');
+    if (!/^https?:\/\/[^\s]+$/i.test(base) || base.length > 500 || !q.user || !q.pass || q.user.length > 200 || q.pass.length > 200) { send(res, 400, 'text/plain', 'bad account'); return; }
+    var user = String(q.user), pass = String(q.pass);
+    if (path === '/xtlive/cats') {
+        xtlFetchCats(base, user, pass, function (err, cats) {
+            if (err) { send(res, err.status || 502, 'application/json', JSON.stringify({ error: err.message || 'failed' })); return; }
+            send(res, 200, 'application/json', JSON.stringify({ cats: cats }));
+        });
+        return;
+    }
+    var fmt = q.fmt === 'hls' ? 'hls' : 'ts';
+    var cats = q.cats ? String(q.cats).split(',').map(function (c) { return c.trim(); }).filter(Boolean) : [];
+    var catsSorted = cats.slice().sort();
+    var key = base + '|' + user + '|' + fmt + '|' + catsSorted.join(',');
+    var force = q.force === '1';
+    xtvSweep();
+    var x = _xtl[key];
+    if (!x) {
+        var keys = Object.keys(_xtl);
+        if (keys.length >= XTV_KEEP) { keys.sort(function (a, b) { return _xtl[a].used - _xtl[b].used; }); delete _xtl[keys[0]]; }
+        x = _xtl[key] = { key: key, base: base, user: user, pass: pass, fmt: fmt, cats: catsSorted, state: 'new', items: null, groups: 0, dropped: 0, at: 0, waiters: [] };
+    }
+    x.pass = pass; x.used = Date.now();
+    function reply(err) {
+        if (err) { send(res, err.status || 502, 'application/json', JSON.stringify({ error: err.message || 'failed' })); return; }
+        send(res, 200, 'application/json', JSON.stringify({ state: x.state, at: x.at, count: x.items.length, groups: x.groups, dropped: x.dropped || 0, channels: x.items }));
+    }
+    if (!force && x.items && x.at && Date.now() - x.at <= XTV_FRESH_MS) { reply(null); return; }
+    if (x.loading) { x.waiters.push(reply); return; }
+    x.loading = true;
+    x.waiters.push(reply);
+    function finishWaiters(err) {
+        x.loading = false;
+        var w = x.waiters; x.waiters = [];
+        w.forEach(function (fn) { try { fn(err); } catch (e) {} });
+    }
+    function fetchFromNet() {
+        xtlFetchCats(base, user, pass, function (catErr, catList) {
+            if (catErr && catErr.status === 401) { finishWaiters(catErr); return; }
+            var catMap = Object.create(null);
+            (catList || []).forEach(function (c) { catMap[c.id] = c.name; });
+            var catSet = null;
+            if (cats.length) {
+                catSet = Object.create(null);
+                cats.forEach(function (c) { catSet[c] = true; });
+            }
+            var items = [], groupSet = Object.create(null), dropped = 0;
+            var url = base + '/player_api.php?username=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(pass) + '&action=get_live_streams';
+            var feed = xtvItems(function (o) {
+                if (!o || typeof o !== 'object') { return; }
+                if (catSet && !catSet[String(o.category_id || '')]) { return; }
+                if (items.length >= XTV_ITEMS) { dropped++; return; }
+                var r = xtLiveRecord(o, catMap, base, user, pass, fmt);
+                if (r) { items.push(r); groupSet[r.group] = 1; }
+            });
+            xtvGet(url, feed, function (err) {
+                if (err) {
+                    x.state = x.items ? 'ready' : 'failed';
+                    finishWaiters(err);
+                    return;
+                }
+                x.items = items;
+                x.at = Date.now();
+                x.groups = Object.keys(groupSet).length;
+                x.dropped = dropped;
+                x.state = 'ready';
+                xtlSave(x);
+                finishWaiters(null);
+            });
+        });
+    }
+    if (!force && !x.items && !x.triedFile && xtlFile(x.key)) {
+        x.triedFile = true;
+        xtlLoad(x, function (items, at, groups, dropped) {
+            if (items && at && Date.now() - at <= XTV_FRESH_MS) {
+                x.items = items; x.at = at; x.groups = groups; x.dropped = dropped; x.state = 'ready'; x.saved = true;
+                finishWaiters(null);
+                return;
+            }
+            fetchFromNet();
+        });
+        return;
+    }
+    fetchFromNet();
 }
 
 // ---- Stalker portals (/stalker/list, /stalker/link, /stalker/genres; films and series below) ----
@@ -6231,6 +6407,7 @@ function epgClear() {
     (files.names || []).concat(lists.names || []).forEach(function (n) { try { require('fs').unlinkSync(d + '/' + n); } catch (e) {} });
     _epg = Object.create(null); _epgQueue = [];   // (one being read: not saved, see epgPump)
     _xtv = Object.create(null); _xtvQueue = [];   // (the Xtream lists: read again when asked for)
+    _xtl = Object.create(null);
     return files.count + lists.count;
 }
 function epgControl(req, res, path, query) {

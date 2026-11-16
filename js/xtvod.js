@@ -15,7 +15,7 @@ var XtVod = (function () {
     // The Xtream accounts among your playlists (switched on): { id, label, base, user, pass }.
     function accounts() {
         if (typeof IPTV === 'undefined' || !IPTV.xtreamParts || !IPTV.xtreamFormat) { return []; }
-        return IPTV.getPlaylists().filter(function (p) { return !p.off && IPTV.xtreamFormat(p.id); }).map(function (p) {
+        return IPTV.getPlaylists().filter(function (p) { return !p.off && !p.noVod && IPTV.xtreamFormat(p.id); }).map(function (p) {
             var x = IPTV.xtreamParts(p.url);
             return x && x.user && x.pass ? { id: p.id, label: IPTV.label(p.id), base: x.base, user: x.user, pass: x.pass } : null;
         }).filter(Boolean);
