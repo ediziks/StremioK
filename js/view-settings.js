@@ -208,6 +208,7 @@
         var a = appearance(), p = Stremio.getPrefs();
         U.applyTheme(a.accent, a.bg);
         U.setLook(p.look, p.effects, a.bg === 'gray' || a.bg === 'white');
+        if (U.setOledShift) { U.setOledShift(p.oledShift, a.bg); }
         U.setZoom(zoomPct() / 100);
     }
     // The interface's language (js/i18n.js): Automatic (the TV's own), or one picked; each named in
@@ -262,6 +263,10 @@
         wrap.appendChild(subPickRow(U.t('Hide spoilers'), [['off', U.t('Off')], ['pictures', U.t('Pictures')], ['all', U.t('Pictures and synopses')]], 'spoilers', {
             get: function () { return { spoilers: Stremio.getPrefs().spoilers }; },
             set: function (cfg) { Stremio.setPref('spoilers', cfg.spoilers); }
+        }));
+        wrap.appendChild(subPickRow(U.t('OLED pixel shift'), [['auto', U.t('Auto (dark & black)')], ['on', U.t('Always on')], ['off', U.t('Off')]], 'oledShift', {
+            get: function () { return { oledShift: Stremio.getPrefs().oledShift }; },
+            set: function (cfg) { Stremio.setPref('oledShift', cfg.oledShift); applyAppearance(); }
         }));
         focusSettings();
     }
@@ -1729,6 +1734,70 @@
                 set: function (c) { StVod.setKeepMinutes(+c.keep); }
             }));
         }
+
+        function rebuildTidied() {
+            if (typeof IPTV !== 'undefined' && IPTV.rebuild) { IPTV.rebuild(); }
+            refreshAddonRows('local:iptv');
+            markHomeDirty();
+        }
+        var ON_OFF = [['on', U.t('On')], ['off', U.t('Off')]];
+        wrap.appendChild(subPickRow(U.t('Playlist tidier'), ON_OFF, 'v', {
+            get: function () { return { v: Stremio.getPrefs().iptvTidy ? 'on' : 'off' }; },
+            set: function (c) { Stremio.setPref('iptvTidy', c.v === 'on'); rebuildTidied(); }
+        }));
+        var COUNTRY_PRESETS = [
+            ['TR,UK,NL', 'TR · UK · NL'],
+            ['NL,UK,DE', 'NL · UK · DE'],
+            ['US,UK,CA', 'US · UK · CA'],
+            ['DE,AT,CH', 'DE · AT · CH'],
+            ['', U.t('Off (keep playlist order)')],
+            ['__custom__', U.t('Custom…')]
+        ];
+        var cRow = U.el('div', 'addon-item focusable cfg-row');
+        var cName = U.el('div', 'a-name');
+        function renderCountryLabel() {
+            var cur = Stremio.getPrefs().iptvCountries || '';
+            cName.textContent = U.t('Preferred countries') + ':  ' + (cur ? cur.split(',').join(' · ') : U.t('Off'));
+        }
+        renderCountryLabel();
+        cRow.appendChild(cName);
+        cRow.appendChild(U.el('div', 'a-url', U.t('Press OK to choose which countries float to the top')));
+        cRow.__onselect = function () {
+            var cur = Stremio.getPrefs().iptvCountries || '';
+            pickList(U.t('Preferred countries'), COUNTRY_PRESETS, cur, function (v) {
+                if (v === '__custom__') {
+                    App.openEntry({
+                        title: U.t('Preferred country codes'),
+                        hint: U.t('Enter comma-separated 2-letter codes in priority order (e.g. TR,UK,NL).'),
+                        value: cur || 'TR,UK,NL',
+                        placeholder: 'TR,UK,NL',
+                        onConfirm: function (txt) {
+                            Stremio.setPref('iptvCountries', txt || '');
+                            rebuildTidied();
+                            App.back();
+                            renderSettings();
+                        }
+                    });
+                    return;
+                }
+                Stremio.setPref('iptvCountries', v);
+                rebuildTidied();
+                renderCountryLabel();
+            });
+        };
+        wrap.appendChild(cRow);
+        wrap.appendChild(subPickRow(U.t('Collapse quality variants'), ON_OFF, 'v', {
+            get: function () { return { v: Stremio.getPrefs().iptvCollapseVariants ? 'on' : 'off' }; },
+            set: function (c) { Stremio.setPref('iptvCollapseVariants', c.v === 'on'); rebuildTidied(); }
+        }));
+        wrap.appendChild(subPickRow(U.t('Hide adult (XXX / 18+)'), ON_OFF, 'v', {
+            get: function () { return { v: Stremio.getPrefs().iptvHideAdult ? 'on' : 'off' }; },
+            set: function (c) { Stremio.setPref('iptvHideAdult', c.v === 'on'); rebuildTidied(); }
+        }));
+        wrap.appendChild(subPickRow(U.t('Browse over live video'), ON_OFF, 'v', {
+            get: function () { return { v: Stremio.getPrefs().liveBrowseMode ? 'on' : 'off' }; },
+            set: function (c) { Stremio.setPref('liveBrowseMode', c.v === 'on'); }
+        }));
 
         wrap.appendChild(U.el('div', 'hint',
             U.t('Channels are grouped into IPTV and Radio rows on Home. ▲ / ▼ set the playlists\' order: a channel in two playlists comes from the first.')));
