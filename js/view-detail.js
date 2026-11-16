@@ -2175,7 +2175,7 @@
                     variantUrl: YTPlay.resolverUrl(ytPage),
                     initialQualityHeight: 1080,
                     type: _d.type, id: videoId, name: label,
-                    poster: _d.meta && _d.meta.poster, streams: [], yt: ytPage, zap: zap, zapTo: zap ? zapToChannel : null
+                    poster: _d.meta && _d.meta.poster, streams: [], yt: ytPage, zap: zap, zapTo: zap ? zapToChannel : null, zapToId: (_d && _d.live) ? zapToId : null
                 }, onExit);
             }, function () {
                 U.spinner(false);
@@ -2186,7 +2186,7 @@
             return;
         }
         var ctx = { url: stream.url, type: _d.type, addonType: _d.addonType, id: videoId, name: label, parent: _d.id,
-            poster: _d.meta.poster, background: _d.meta.background, streams: playableSources(), _headers: U.sanitizeHeaders(stream._headers) || undefined, zap: zap, zapTo: zap ? zapToChannel : null,
+            poster: _d.meta.poster, background: _d.meta.background, streams: playableSources(), _headers: U.sanitizeHeaders(stream._headers) || undefined, zap: zap, zapTo: zap ? zapToChannel : null, zapToId: (_d && _d.live) ? zapToId : null,
             localSubs: stream._localSubs, localFile: stream._localFile,
             subExtra: fileHintsOf(stream), sourceSubs: sourceSubsOf(stream), formatInfo: Stremio.streamInfo(stream), fromStart: !!(how && how.fromStart) || undefined, viaService: !!(how && how.viaService) || undefined,
             titleIds: titleIdsOf(_d.meta, videoId), stream: stream, nextSource: nextSourceFor, downloadAs: typeof Downloads !== 'undefined' ? downloadTitle(videoId) : undefined,
@@ -2256,6 +2256,25 @@
     var ZAP_DELAY = 700;
     var _zap = null;   // { target, timer }
     // A channel by its number in the row (the player's number keys): as CH+ / CH− tune.
+    function zapToId(c) {
+        if (!_d || !_d.live || !c || !c.id) { return; }
+        if (!_d.channels) { _d.channels = { list: [], idx: 0 }; }
+        var list = _d.channels.list;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].meta && list[i].meta.id === c.id) {
+                if (_zap) { clearTimeout(_zap.timer); _zap = null; }
+                U.toast((i + 1) + ' / ' + list.length + '    ' + (list[i].meta.name || c.name || ''), 1600);
+                if (i === _d.channels.idx && _d.channels.tuning == null) { return; }
+                tuneTo(i);
+                return;
+            }
+        }
+        list.push({ meta: { id: c.id, type: c.type || 'tv', name: c.name, poster: c.logo || '', logo: c.logo || '', posterShape: 'landscape' }, card: null });
+        var idx = list.length - 1;
+        if (_zap) { clearTimeout(_zap.timer); _zap = null; }
+        U.toast((idx + 1) + ' / ' + list.length + '    ' + (c.name || ''), 1600);
+        tuneTo(idx);
+    }
     function zapToChannel(pos) {
         var ch = _d && _d.channels;
         if (!ch) { return; }

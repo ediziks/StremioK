@@ -59,6 +59,7 @@
         _menuOpen = false; _barOpen = false; _segShown = {};
         if (_barTimer) { clearTimeout(_barTimer); _barTimer = null; }
         closeCast(true);
+        closeChannelDrawer(true);
         resetYtLinks();
         endScrub();
         hideSkip();
@@ -68,6 +69,7 @@
     // Playback stopped: everything closed (without bringing the progress bar back up).
     function closeControls() {
         closeCast(true);
+        closeChannelDrawer(true);
         resetYtLinks();
         endScrub();
         streamInfoOff();
@@ -323,6 +325,9 @@
         // Glyphs kept to the old Geometric-Shapes/Arrows blocks — the media-control
         // symbols (⏵ ⏸ ⏮ ⏭ ⤶) don't render on Tizen 3.0's fonts.
         var b = [{ label: isPaused() ? U.t('▶ Play') : U.t('‖ Pause'), run: togglePlay }];
+        if (S.isLive && typeof IPTV !== 'undefined' && IPTV.channels && IPTV.channels().length) {
+            b.push({ label: U.t('≡ Channels'), run: function () { closeBar(); openChannelDrawer(); } });
+        }
         if (!S.isLive) { b.push({ label: U.t('↺ Restart'), run: function () { seekTo(0); closeBar(); } }); }
         if (chapters().length) { b.push({ label: U.t('≡ Chapters'), run: function () { closeBar(); openMenu(chaptersMenu()); } }); }
         var hl = sponsorHighlight();
@@ -1074,9 +1079,10 @@
             if (_cast && !_menuOpen) { castKey('OK_LONG'); return true; }
             action = 'OK';
         }
-        // Route directional/OK/BACK to the active overlay (menu > cast > bar > skip prompt: the
+        // Route directional/OK/BACK to the active overlay (menu > drawer > cast > bar > skip prompt: the
         // menu over Cast & more is a title's, opened from it).
         if (_menuOpen) { menuKey(action); return true; }
+        if (_drawer) { drawerKey(action); return true; }
         if (_cast) { castKey(action); return true; }
         if (_barOpen) { barKey(action); return true; }
         if ((_yl || _card) && ytLinksKey(action)) { return true; }   // (UP chooses one; BACK hides the end screen)
@@ -1092,7 +1098,7 @@
         switch (action) {
             case 'OK': togglePlay(); return true;
             case 'RIGHT': scrub(seekStep()); return true;
-            case 'LEFT': scrub(-seekStep()); return true;
+            case 'LEFT': if (S.isLive && !menuOpen() && !_barOpen) { openChannelDrawer(); return true; } scrub(-seekStep()); return true;
             case 'UP': openBar(); return true;
             case 'DOWN': openMenu(); return true;
             case 'BACK': exit(); return true;
@@ -1100,8 +1106,168 @@
         return true;
     }
 
+    // ---------- live channel & EPG drawer (LEFT / UP > Channels) ----------
+    var DRAWER_ROWS = 12;
+    var _drawer = null;
+    var _drawerEpgHooked = false;
+
+    function buildDrawerGroups() {
+        var all = (typeof IPTV !== 'undefined' && IPTV.channels) ? IPTV.channels().filter(function (c) { return !c.guideOnly; }) : [];
+        var favs = (typeof IPTV !== 'undefined' && IPTV.isFavorite) ? all.filter(function (c) { return IPTV.isFavorite(c.id); }) : [];
+        var groups = [];
+        if (favs.length) { groups.push({ key: '__fav__', label: U.t('★ Favorites'), list: favs }); }
+        groups.push({ key: '__all__', label: U.t('All'), list: all });
+        var byGrp = Object.create(null);
+        all.forEach(function (c) {
+            var g = c.group || U.t('Live TV');
+            if (!byGrp[g]) {
+                byGrp[g] = [];
+                groups.push({ key: 'g:' + g, label: g, list: byGrp[g] });
+            }
+            byGrp[g].push(c);
+        });
+        return groups;
+    }
+
+    function openChannelDrawer() {
+        if (!S.active || !S.isLive) { return; }
+        var groups = buildDrawerGroups();
+        if (!groups.length || !groups[0].list.length) { return; }
+        var el = U.byId('channel-drawer');
+        if (!el) { el = U.el('div', 'hidden'); el.id = 'channel-drawer'; document.body.appendChild(el); }
+        U.clear(el);
+        var head = U.el('div', 'cd-head');
+        head.appendChild(U.el('div', 'cd-title', U.t('Channels')));
+        head.appendChild(U.el('div', 'cd-hint', U.t('←/→ Group   ↑/↓ Channel   OK Zap   RETURN Close')));
+        var pillsEl = U.el('div', 'cd-pills');
+        var listEl = U.el('div', 'cd-list');
+        el.appendChild(head);
+        el.appendChild(pillsEl);
+        el.appendChild(listEl);
+
+        var grpIdx = groups[0].key === '__fav__' && groups.length > 1 ? 1 : 0;
+        var curId = S.ctx && S.ctx.id, idx = 0;
+        var activeList = groups[grpIdx].list;
+        for (var i = 0; i < activeList.length; i++) {
+            if (activeList[i].id === curId) { idx = i; break; }
+        }
+        var winStart = Math.max(0, Math.min(idx - Math.floor(DRAWER_ROWS / 2), Math.max(0, activeList.length - DRAWER_ROWS)));
+        _drawer = { el: el, pillsEl: pillsEl, listEl: listEl, groups: groups, grpIdx: grpIdx, idx: idx, winStart: winStart };
+        if (!_drawerEpgHooked && typeof EPG !== 'undefined' && EPG.onChange) {
+            _drawerEpgHooked = true;
+            EPG.onChange(function () { if (_drawer && S.active) { renderChannelDrawer(true); } });
+        }
+        el.className = '';
+        renderChannelDrawer(false);
+    }
+
+    function closeChannelDrawer(quiet) {
+        if (!_drawer) { return; }
+        _drawer.el.className = 'hidden';
+        _drawer = null;
+        if (!quiet) { showOSD(false); }
+    }
+
+    function renderChannelDrawer(epgOnly) {
+        var d = _drawer;
+        if (!d) { return; }
+        var grp = d.groups[d.grpIdx], list = grp.list;
+        if (d.idx >= list.length) { d.idx = Math.max(0, list.length - 1); }
+        if (d.idx < d.winStart) { d.winStart = d.idx; }
+        else if (d.idx >= d.winStart + DRAWER_ROWS) { d.winStart = d.idx - DRAWER_ROWS + 1; }
+        d.winStart = Math.max(0, Math.min(d.winStart, Math.max(0, list.length - DRAWER_ROWS)));
+
+        if (!epgOnly) {
+            U.clear(d.pillsEl);
+            d.groups.forEach(function (g, i) {
+                var p = U.el('div', 'cd-pill' + (i === d.grpIdx ? ' sel' : ''), g.label);
+                d.pillsEl.appendChild(p);
+                if (i === d.grpIdx && p.scrollIntoView) { try { p.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {} }
+            });
+        }
+
+        var visible = list.slice(d.winStart, d.winStart + DRAWER_ROWS);
+        if (!epgOnly && typeof EPG !== 'undefined' && EPG.want && visible.length) {
+            EPG.want(visible.map(function (c) { return c.id; }));
+        }
+
+        U.clear(d.listEl);
+        var curId = S.ctx && S.ctx.id;
+        visible.forEach(function (c, k) {
+            var absIdx = d.winStart + k;
+            var row = U.el('div', 'cd-row' + (absIdx === d.idx ? ' sel' : '') + (c.id === curId ? ' cur' : ''));
+            row.appendChild(U.el('div', 'cd-num', '' + (absIdx + 1)));
+            var logoUrl = c.logo || (typeof EPG !== 'undefined' && EPG.logo ? EPG.logo(c.id) : '');
+            if (logoUrl) {
+                var img = U.el('img', 'cd-logo');
+                img.src = logoUrl;
+                img.onerror = function () { if (img.parentNode) { img.parentNode.removeChild(img); } };
+                row.appendChild(img);
+            }
+            var info = U.el('div', 'cd-info');
+            var favMark = (typeof IPTV !== 'undefined' && IPTV.isFavorite && IPTV.isFavorite(c.id)) ? '★ ' : '';
+            info.appendChild(U.el('div', 'cd-name', favMark + c.name));
+            var ep = (typeof EPG !== 'undefined' && EPG.now) ? EPG.now(c.id) : null;
+            var nowLine = ep && ep.now ? EPG.hhmm(ep.now.start) + ' ' + ep.now.title : (c.group || U.t('Live'));
+            var nextLine = ep && ep.next ? U.t('Next:') + ' ' + EPG.hhmm(ep.next.start) + ' ' + ep.next.title : '';
+            info.appendChild(U.el('div', 'cd-now', nowLine));
+            if (nextLine) { info.appendChild(U.el('div', 'cd-next', nextLine)); }
+            row.appendChild(info);
+            d.listEl.appendChild(row);
+        });
+    }
+
+    function zapDrawerChannel(c) {
+        if (!c) { return; }
+        closeChannelDrawer();
+        if (S.ctx && S.ctx.id === c.id) { return; }
+        if (S.ctx && S.ctx.zapToId) { S.ctx.zapToId(c); return; }
+        if (typeof Stremio !== 'undefined' && Stremio.getStreams) {
+            U.spinner(true, U.t('Tuning to {name}…', { name: c.name }));
+            Stremio.getStreams(c.type || 'tv', c.id).then(function (list) {
+                U.spinner(false);
+                var playable = list.filter(Stremio.isPlayable);
+                if (!playable.length) { U.toast(U.t('No playable source for {name}', { name: c.name })); return; }
+                P.play({ url: playable[0].url, type: c.type || 'tv', id: c.id, name: c.name, poster: c.logo || '', streams: playable, stream: playable[0], _headers: U.sanitizeHeaders(playable[0]._headers) || undefined });
+            }, function () { U.spinner(false); U.toast(U.t('Could not load sources')); });
+        }
+    }
+
+    function drawerKey(action) {
+        var d = _drawer;
+        if (!d) { return false; }
+        var list = d.groups[d.grpIdx].list;
+        if (action === 'UP') {
+            if (list.length) { d.idx = wrap(d.idx - 1, list.length); renderChannelDrawer(false); }
+            return true;
+        }
+        if (action === 'DOWN') {
+            if (list.length) { d.idx = wrap(d.idx + 1, list.length); renderChannelDrawer(false); }
+            return true;
+        }
+        if (action === 'LEFT' || action === 'RIGHT') {
+            d.grpIdx = wrap(d.grpIdx + (action === 'LEFT' ? -1 : 1), d.groups.length);
+            var nl = d.groups[d.grpIdx].list, curId = S.ctx && S.ctx.id;
+            d.idx = 0;
+            for (var i = 0; i < nl.length; i++) { if (nl[i].id === curId) { d.idx = i; break; } }
+            d.winStart = Math.max(0, Math.min(d.idx - Math.floor(DRAWER_ROWS / 2), Math.max(0, nl.length - DRAWER_ROWS)));
+            renderChannelDrawer(false);
+            return true;
+        }
+        if (action === 'OK') {
+            zapDrawerChannel(list[d.idx]);
+            return true;
+        }
+        if (action === 'BACK') {
+            closeChannelDrawer();
+            return true;
+        }
+        return true;
+    }
+
     // ----- for the other parts (and js/player.js) -----
     P.barShown = function () { return _barOpen; };
+    P.openChannelDrawer = openChannelDrawer; P.closeChannelDrawer = closeChannelDrawer;
     P.menuOpen = menuOpen; P.scrubbing = scrubbing; P.skipShown = skipShown; P.resetControls = resetControls;
     P.rootMenu = rootMenu;
     P.closeControls = closeControls; P.showSkip = showSkip; P.skipTick = skipTick; P.renderScrub = renderScrub; P.topMenu = topMenu;

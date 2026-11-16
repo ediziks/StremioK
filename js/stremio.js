@@ -522,6 +522,11 @@ var Stremio = (function () {
         configChanged();
         return changed;
     }
+    function iptvSetArchiveOffset(id, hours) {
+        var changed = _hasIptv && IPTV.setArchiveOffset ? IPTV.setArchiveOffset(id, hours) : false;
+        configChanged();
+        return changed;
+    }
     function iptvRenamePlaylist(id, name) { return _hasIptv ? IPTV.renamePlaylist(id, name) : false; }
     function iptvSetPlaylistGuide(id, url) { return _hasIptv && IPTV.setPlaylistGuide ? IPTV.setPlaylistGuide(id, url) : false; }
     function iptvSetPlaylistOff(id, off) { var ok = _hasIptv ? IPTV.setPlaylistOff(id, off) : false; configChanged(); return ok; }
@@ -2504,7 +2509,7 @@ var Stremio = (function () {
         importSetupList: importSetupList, savedManifest: savedManifest, isAddonOff: isAddonOff, setAddonOff: setAddonOff, onIptvReady: onIptvReady, streamListenerCount: function (type, id) { var e = _streamCache[type + ':' + id]; return e ? e.listeners.length : 0; },
         iptvGetPlaylists: iptvGetPlaylists, iptvAddPlaylist: iptvAddPlaylist,
         iptvUpdatePlaylist: iptvUpdatePlaylist, iptvRemovePlaylist: iptvRemovePlaylist,
-        iptvRenamePlaylist: iptvRenamePlaylist, iptvSetPlaylistGuide: iptvSetPlaylistGuide, iptvAddXtream: iptvAddXtream, iptvAddStalker: iptvAddStalker, iptvSetXtreamFormat: iptvSetXtreamFormat, iptvSetPlaylistGroups: iptvSetPlaylistGroups, iptvSetXtreamNoVod: iptvSetXtreamNoVod, iptvRefreshEvery: iptvRefreshEvery, iptvSetRefreshEvery: iptvSetRefreshEvery, iptvReadAt: iptvReadAt, iptvSetPlaylistOff: iptvSetPlaylistOff, iptvMovePlaylist: iptvMovePlaylist, iptvLabel: iptvLabel,
+        iptvRenamePlaylist: iptvRenamePlaylist, iptvSetPlaylistGuide: iptvSetPlaylistGuide, iptvAddXtream: iptvAddXtream, iptvAddStalker: iptvAddStalker, iptvSetXtreamFormat: iptvSetXtreamFormat, iptvSetPlaylistGroups: iptvSetPlaylistGroups, iptvSetXtreamNoVod: iptvSetXtreamNoVod, iptvSetArchiveOffset: iptvSetArchiveOffset, iptvRefreshEvery: iptvRefreshEvery, iptvSetRefreshEvery: iptvSetRefreshEvery, iptvReadAt: iptvReadAt, iptvSetPlaylistOff: iptvSetPlaylistOff, iptvMovePlaylist: iptvMovePlaylist, iptvLabel: iptvLabel,
         iptvLoad: iptvLoad, iptvStatus: iptvStatus, iptvReload: iptvReload
     };
 })();

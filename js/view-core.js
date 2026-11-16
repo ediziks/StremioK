@@ -461,6 +461,24 @@ var ViewParts = {};
             U.toast(next ? U.t('Live TV only: Movies & Series hidden for this account') : U.t('Movies & Series included for this account'), 4000);
             renderSettings();
         };
+        var ao = playlist.archiveOffset || 0;
+        var aoLabel = ao === 0 ? U.t('UTC (0h)') : (ao > 0 ? '+' + ao + 'h' : ao + 'h');
+        var catchupOffsetBtn = U.el('div', 'pill focusable modal-btn', U.t('Catch-up time offset: {offset}', { offset: aoLabel }));
+        catchupOffsetBtn.__onselect = function () {
+            closeModal();
+            var opts = [];
+            for (var h = -12; h <= 14; h++) {
+                var lbl = h === 0 ? U.t('UTC (0h)') : (h > 0 ? '+' + h + 'h' : h + 'h');
+                opts.push([h, lbl]);
+            }
+            pickList(U.t('Catch-up time offset'), opts, ao, function (val) {
+                if (Stremio.iptvSetArchiveOffset) { Stremio.iptvSetArchiveOffset(playlist.id, val); }
+                else if (IPTV.setArchiveOffset) { IPTV.setArchiveOffset(playlist.id, val); }
+                var pickedLbl = val === 0 ? U.t('UTC (0h)') : (val > 0 ? '+' + val + 'h' : val + 'h');
+                U.toast(U.t('Catch-up time offset: {offset}', { offset: pickedLbl }), 3000);
+                renderSettings();
+            });
+        };
         var groups = U.el('div', 'pill focusable modal-btn', U.t('Channel groups'));   // (a Stalker portal: the genres to read)
         groups.__onselect = function () {
             closeModal();
@@ -631,7 +649,7 @@ var ViewParts = {};
         row.appendChild(onoff);
         row.appendChild(edit);
         if (!playlist.off && typeof EPG !== 'undefined' && EPG.available && EPG.available()) { row.appendChild(guide); }
-        if (!playlist.off && fmt) { row.appendChild(format); row.appendChild(xtGroups); row.appendChild(noVodBtn); }
+        if (!playlist.off && fmt) { row.appendChild(format); row.appendChild(xtGroups); row.appendChild(noVodBtn); row.appendChild(catchupOffsetBtn); }
         if (!playlist.off && isStalkerPl) { row.appendChild(groups); }
         if (!playlist.off && !fmt && !isStalkerPl && IPTV.m3uGroups) { row.appendChild(m3uGroupsBtn); }
         if (!playlist.off && (fmt || isStalkerPl || IPTV.m3uGroups)) { row.appendChild(phoneGroupsBtn); }

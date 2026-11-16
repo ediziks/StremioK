@@ -44,6 +44,10 @@ var IPTV = (function () {
                     if (grps.length) { o.groups = grps; }
                 }
                 if (p.noVod === true) { o.noVod = true; }
+                if (p.archiveOffset !== undefined && p.archiveOffset !== null && p.archiveOffset !== '') {
+                    var ao = Math.round(+p.archiveOffset);
+                    if (isFinite(ao) && ao >= -12 && ao <= 14 && ao !== 0) { o.archiveOffset = ao; }
+                }
                 return o;
             });
     }
@@ -225,6 +229,36 @@ var IPTV = (function () {
         if (on) { list[i].noVod = true; } else { delete list[i].noVod; }
         savePlaylists(list, true);
         return true;
+    }
+    function setArchiveOffset(id, hours) {
+        var list = getPlaylists(), i = find(list, id);
+        if (i < 0) { return false; }
+        var h = Math.round(+hours);
+        if (!isFinite(h) || h < -12 || h > 14) { return false; }
+        if (h === 0) { delete list[i].archiveOffset; } else { list[i].archiveOffset = h; }
+        savePlaylists(list, true);
+        return true;
+    }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    function catchupUrl(channelId, progStartSec, progStopSec) {
+        var c = _cache && _cache.byId ? _cache.byId[channelId] : null;
+        if (!c || !c.archive || !(c.archiveDays > 0) || !c.streamId) { return ''; }
+        var start = +progStartSec, stop = +progStopSec;
+        if (!isFinite(start) || !isFinite(stop) || start <= 0 || stop <= start) { return ''; }
+        var now = Date.now() / 1000;
+        if (stop > now || start < now - c.archiveDays * 86400) { return ''; }
+        var list = getPlaylists(), i = find(list, c._playlistId), pl = i !== -1 ? list[i] : null;
+        if (!pl || !isXtream(pl.url)) { return ''; }
+        var x = xtreamParts(pl.url);
+        if (!x || !x.base || !x.user || !x.pass) { return ''; }
+        var fmt = xtreamFormat(pl.id) === 'hls' ? 'm3u8' : 'ts';
+        var durationMin = Math.max(1, Math.round((stop - start) / 60));
+        var offsetHours = (pl.archiveOffset && isFinite(pl.archiveOffset)) ? pl.archiveOffset : 0;
+        var d = new Date((start + offsetHours * 3600) * 1000);
+        var stamp = d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) +
+            ':' + pad2(d.getUTCHours()) + '-' + pad2(d.getUTCMinutes());
+        return x.base + '/timeshift/' + encodeURIComponent(x.user) + '/' + encodeURIComponent(x.pass) +
+            '/' + durationMin + '/' + stamp + '/' + c.streamId + '.' + fmt;
     }
     function m3uGroups(id) {
         var list = getPlaylists(), i = find(list, id);
@@ -1033,6 +1067,7 @@ var IPTV = (function () {
         movePlaylist: movePlaylist, setPlaylistGuide: setPlaylistGuide, label: labelOf,
         macOf: macOf, stbUa: STB_UA, stalkerPortal: stalkerPortal, stalkerCheck: stalkerCheck, addStalker: addStalker, isStalker: isStalker, stalkerAll: stalkerAll, setStalkerAll: setStalkerAll, stalkerGroups: stalkerGroups, setStalkerGroups: setStalkerGroups,
         xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, m3uGroups: m3uGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
+        setArchiveOffset: setArchiveOffset, catchupUrl: catchupUrl,
         isFavorite: isFavorite, setFavorite: setFavorite, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,

@@ -499,7 +499,7 @@ var PlayerParts = {};
         if (U.crumb) { U.crumb('play ' + (ctx.type || '') + ' ' + (ctx.private ? '(private)' : /^file:/i.test(ctx.url || '') ? 'file .' + ('' + ctx.url).split('.').pop() : ('' + (ctx.url || '')).replace(/^https?:\/\/([^\/?#]+).*$/i, '$1'))); }   // (Diagnostics, after an unexpected close)
         S.active = true; S.cur = 0; S.dur = 0; _bg = null; S.actual = null;
         // Stremio "tv" and "radio" types are strong live hints; refined after prepare.
-        S.isLive = !(ctx.stream && ctx.stream._vod) && ((ctx.type === 'tv' || ctx.type === 'radio') || /^iptv:/.test(ctx.id || '') || !!ctx.isLive);   // (an IPTV channel: live, a sports one too; a film in a playlist isn't)
+        S.isLive = ctx.isLive !== false && !(ctx.stream && ctx.stream._vod) && ((ctx.type === 'tv' || ctx.type === 'radio') || /^iptv:/.test(ctx.id || '') || !!ctx.isLive);   // (an IPTV channel: live, a sports one too; a film in a playlist or catch-up isn't)
         if (S.isLive) { vodCheck(ctx); }   // (one whose manifest says it's a film: not live after all)
         formatStart(ctx);
         S.ctx.resumeSec = (ctx.trailer || ctx.fromStart) ? 0 : (ctx.resumeSec || getResume(ctx.type, ctx.id));   // (Play from start: 0:00)
@@ -672,9 +672,9 @@ var PlayerParts = {};
 
     // Decides live vs VOD from the reported duration (0 / non-finite = live).
     function markLiveFromDuration() {
-        if (S.ctx && !(S.ctx.stream && S.ctx.stream._vod) && !S.ctx._vodManifest && (S.ctx.type === 'tv' || S.ctx.type === 'radio' || /^iptv:/.test(S.ctx.id || ''))) { S.isLive = true; }
+        if (S.ctx && S.ctx.isLive !== false && !(S.ctx.stream && S.ctx.stream._vod) && !S.ctx._vodManifest && (S.ctx.type === 'tv' || S.ctx.type === 'radio' || /^iptv:/.test(S.ctx.id || ''))) { S.isLive = true; }
         if (!S.dur || S.dur <= 0 || !isFinite(S.dur)) { S.isLive = true; }
-        else if (S.ctx && S.ctx._vodManifest) { S.isLive = false; }   // (its manifest said it's a film before it was ready: see vodCheck)
+        else if (S.ctx && (S.ctx._vodManifest || S.ctx.isLive === false)) { S.isLive = false; }   // (its manifest said it's a film before it was ready: see vodCheck)
     }
 
     // A playlist's entry whose link isn't a file's may still be a film: its manifest says so (DASH

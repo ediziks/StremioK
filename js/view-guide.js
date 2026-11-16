@@ -180,9 +180,10 @@
                 g.lists[c.id].forEach(function (p, i) {
                     if (p.stop <= g.start || p.start >= end) { return; }
                     var on = p.start <= now && now < p.stop, a = Math.max(p.start, g.start), b = Math.min(p.stop, end);
-                    var n = U.el('div', 'guide-prog focusable' + (on ? ' now' : ''), p.title);
+                    var cu = !on ? catchupFor(c, p) : '';
+                    var n = U.el('div', 'guide-prog focusable' + (on ? ' now' : '') + (cu ? ' catchup' : ''), (cu ? '↺ ' : '') + p.title);
                     n.setAttribute('style', 'left: ' + pct((a - g.start) / SPAN) + '%; width: ' + pct((b - a) / SPAN) + '%');
-                    n.__meta = { name: p.title, releaseInfo: c.name + '   ·   ' + EPG.dayTime(p.start) + '–' + EPG.hhmm(p.stop) + (c.guideOnly ? '   ·   ' + U.t('OK: find it in your addons') : ''), description: p.desc, picture: p.picture };
+                    n.__meta = { name: p.title, releaseInfo: c.name + '   ·   ' + EPG.dayTime(p.start) + '–' + EPG.hhmm(p.stop) + (c.guideOnly ? '   ·   ' + U.t('OK: find it in your addons') : cu ? '   ·   ' + U.t('OK: watch catch-up') : ''), description: p.desc, picture: p.picture };
                     n.__p = p; n.__i = i;
                     n.__onselect = function () { pick(g, r, p); };
                     n.__onlongpress = function () { hold(g, r, p); };
@@ -302,25 +303,52 @@
         });
         App.openLive(c.type, c.id, list[idx].meta, { list: list, idx: idx }, best ? { playBest: true } : null);
     }
-    // OK: what's on now plays the channel; another program says what it is.
+    function catchupFor(c, p) {
+        if (!c || c.guideOnly || !p || typeof IPTV === 'undefined' || !IPTV.catchupUrl) { return ''; }
+        return IPTV.catchupUrl(c.id, p.start, p.stop);
+    }
+    function playCatchup(c, p, url) {
+        var focusNode = Focus.current();
+        Player.play({
+            url: url,
+            type: c.type || 'tv',
+            id: c.id,
+            name: p.title + ' · ' + c.name,
+            poster: c.logo || '',
+            isLive: false,
+            fromStart: true,
+            streams: [],
+            stream: { url: url, _vod: true, _catchup: true }
+        }, function () {
+            if (focusNode && document.documentElement.contains(focusNode)) {
+                Focus.setScope(scr('home'), focusNode);
+            }
+        });
+    }
+    // OK: what's on now plays the channel; catch-up plays the aired program; another program says what it is.
     function pick(g, r, p) {
         var c = g.chans[r], now = Date.now() / 1000;
         if (c.guideOnly) { findInAddons(p); return; }
         if (p.start <= now && now < p.stop) { playChannel(g, r); return; }
+        var cu = catchupFor(c, p);
+        if (cu) { playCatchup(c, p, cu); return; }
         U.toast(EPG.dayTime(p.start) + '–' + EPG.hhmm(p.stop) + '   ' + c.name + '   ·   ' + p.title + (p.desc ? ':  ' + p.desc : '') +
             (p.stop <= now ? '   ' + U.t('(already shown)') : ''), 8000);
     }
 
-    // Hold OK on a program: ▶ Watch now (what's on now, a channel that plays), ★ Add to / Remove
-    // from favorites (its channel), Find in your addons (that program, as a guide-only channel's
-    // OK). p: null for a channel whose guide hasn't come (Watch now, its favorites).
+    // Hold OK on a program: ▶ Watch now (what's on now, a channel that plays), ▶ Watch catch-up
+    // (aired program within archiveDays), ★ Add to / Remove from favorites (its channel),
+    // Find in your addons (that program, as a guide-only channel's OK).
     function hold(g, r, p) {
         var c = g.chans[r], now = Date.now() / 1000, fav = IPTV.isFavorite(c.id), items = [];
+        var cu = p ? catchupFor(c, p) : '';
         if (!c.guideOnly && (!p || (p.start <= now && now < p.stop))) { items.push(['play', U.t('▶  Watch now')]); }
+        else if (cu) { items.push(['catchup', U.t('▶  Watch catch-up')]); }
         items.push(['fav', fav ? U.t('★  Remove from favorites') : U.t('★  Add to favorites')]);
         if (p && p.title) { items.push(['find', U.t('🔍  Find in your addons')]); }
         pickList(c.name + (p && p.title ? '  ·  ' + p.title : ''), items, items[0][0], function (v) {
             if (v === 'play') { if (p) { pick(g, r, p); } else { playChannel(g, r); } return; }
+            if (v === 'catchup') { playCatchup(c, p, cu); return; }
             if (v === 'find') { findInAddons(p); return; }
             IPTV.setFavorite(c.id, !fav);
             U.toast(fav ? U.t('Removed from favorites') : U.t('Added to favorites: ★ Favorites, first on the IPTV and Guide tabs'), 3000);

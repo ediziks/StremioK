@@ -327,6 +327,26 @@ html, body {
 #yt-card .yc-title { font-size: 18px; color: #b4bac6; margin-top: 4px; max-height: 48px; overflow: hidden; }
 #yt-card .yc-hint { font-size: 16px; color: #818cf8; margin-top: 6px; }
 
+/* --- Live channel & EPG drawer (LEFT / UP > Channels) --- */
+#channel-drawer { position: absolute; left: 0; top: 0; bottom: 0; width: 620px; z-index: 24; padding: 36px 28px 28px 36px; background: rgba(14,17,23,0.88); border-right: 2px solid rgba(255,255,255,0.12); display: flex; flex-direction: column; box-sizing: border-box; }
+#channel-drawer .cd-head { margin-bottom: 14px; }
+#channel-drawer .cd-title { font-size: 28px; font-weight: bold; color: #e6e9ef; }
+#channel-drawer .cd-hint { font-size: 16px; color: #9aa3b2; margin-top: 4px; white-space: pre; }
+#channel-drawer .cd-pills { display: flex; flex-wrap: nowrap; overflow: hidden; margin-bottom: 16px; padding-bottom: 4px; }
+#channel-drawer .cd-pill { flex: 0 0 auto; margin-right: 8px; padding: 8px 16px; border-radius: 24px; font-size: 18px; background: rgba(255,255,255,0.08); color: #cbd2df; white-space: nowrap; }
+#channel-drawer .cd-pill.sel { background: #818cf8; color: #0e1117; font-weight: bold; }
+#channel-drawer .cd-list { flex: 1; overflow: hidden; }
+#channel-drawer .cd-row { display: flex; align-items: center; padding: 8px 12px; margin-bottom: 4px; border-radius: 10px; border: 3px solid transparent; }
+#channel-drawer .cd-row.cur { background: rgba(129,140,248,0.14); }
+#channel-drawer .cd-row.sel { background: rgba(129,140,248,0.28); border-color: #818cf8; }
+#channel-drawer .cd-num { flex: 0 0 48px; font-size: 18px; color: #8b93a5; text-align: right; margin-right: 12px; }
+#channel-drawer .cd-logo { flex: 0 0 56px; width: 56px; height: 36px; object-fit: contain; margin-right: 12px; border-radius: 4px; background: rgba(255,255,255,0.06); }
+#channel-drawer .cd-info { flex: 1; min-width: 0; }
+#channel-drawer .cd-name { font-size: 20px; font-weight: bold; color: #e6e9ef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#channel-drawer .cd-now { font-size: 16px; color: #cbd2df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+#channel-drawer .cd-next { font-size: 14px; color: #8b93a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guide-prog.catchup { border-left: 3px solid #818cf8; }
+
 /* --- Skip intro/recap/credits prompt --- */
 #skip-prompt { position: absolute; right: 60px; bottom: 250px; z-index: 24; text-align: right; }
 #skip-prompt .skip-btn { display: inline-block; margin-left: 12px; padding: 16px 30px; font-size: 26px; font-weight: bold; border-radius: 10px; background: rgba(22,27,38,0.96); border: 4px solid #818cf8; color: #e6e9ef; }

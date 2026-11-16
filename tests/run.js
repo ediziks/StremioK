@@ -660,8 +660,93 @@ async function run() {
         assert.ok(changeCount >= 1);
     });
 
-    await runTest('catchupUrl (Xtream Catch-Up URL formatter)', () => {
-        assert.fail('not implemented');
+    await runTest('catchupUrl (Xtream Catch-Up URL formatter)', async () => {
+        const realNow = Date.now;
+        const fixedNowMs = Date.UTC(2026, 10, 16, 20, 0, 0); // 2026-11-16T20:00:00Z
+        Date.now = () => fixedNowMs;
+        try {
+            const svc = loadService();
+            const rec12345 = svc.xtLiveRecord(
+                { stream_id: 12345, name: 'Catchup TV', category_id: '10', tv_archive: 1, tv_archive_duration: 7 },
+                { '10': 'News' }, 'http://host:8080', 'user', 'pass', 'ts'
+            );
+            const recNoArch = svc.xtLiveRecord(
+                { stream_id: 99999, name: 'No Archive TV', category_id: '10', tv_archive: 0 },
+                { '10': 'News' }, 'http://host:8080', 'user', 'pass', 'ts'
+            );
+            let curFmt = 'ts';
+            const iptvCtx = loadBrowserScript('js/iptv.js', {
+                YTPlay: {
+                    installMode: () => 'service',
+                    xtliveList: (base, user, pass, fmt) => {
+                        curFmt = fmt || 'ts';
+                        const chs = [rec12345, recNoArch].map((r) => Object.assign({}, r, {
+                            url: `${base}/live/${user}/${pass}/${r.id}.${curFmt === 'hls' ? 'm3u8' : 'ts'}`
+                        }));
+                        return Promise.resolve({ state: 'ready', at: 123456, count: 2, groups: 1, dropped: 0, channels: chs });
+                    }
+                }
+            });
+
+            const id = iptvCtx.IPTV.addXtream('http://host:8080', 'user', 'pass');
+            assert.ok(id);
+            await iptvCtx.IPTV.load(true);
+
+            const chs = iptvCtx.IPTV.channels();
+            const chArch = chs.find((c) => c.streamId === 12345);
+            const chNoArch = chs.find((c) => c.streamId === 99999);
+            assert.ok(chArch && chNoArch);
+
+            const start18 = Date.UTC(2026, 10, 16, 18, 0, 0) / 1000;
+            const stop1845 = start18 + 45 * 60;
+
+            // Default UTC (0h)
+            assert.strictEqual(
+                iptvCtx.IPTV.catchupUrl(chArch.id, start18, stop1845),
+                'http://host:8080/timeshift/user/pass/45/2026-11-16:18-00/12345.ts'
+            );
+
+            // Positive & negative archiveOffset hours (-12..+14)
+            assert.strictEqual(iptvCtx.IPTV.setArchiveOffset(id, 3), true);
+            assert.strictEqual(iptvCtx.IPTV.getPlaylists()[0].archiveOffset, 3);
+            assert.strictEqual(
+                iptvCtx.IPTV.catchupUrl(chArch.id, start18, stop1845),
+                'http://host:8080/timeshift/user/pass/45/2026-11-16:21-00/12345.ts'
+            );
+
+            assert.strictEqual(iptvCtx.IPTV.setArchiveOffset(id, -5), true);
+            assert.strictEqual(
+                iptvCtx.IPTV.catchupUrl(chArch.id, start18, stop1845),
+                'http://host:8080/timeshift/user/pass/45/2026-11-16:13-00/12345.ts'
+            );
+
+            assert.strictEqual(iptvCtx.IPTV.setArchiveOffset(id, 99), false);
+            assert.strictEqual(iptvCtx.IPTV.setArchiveOffset(id, -13), false);
+            assert.strictEqual(iptvCtx.IPTV.setArchiveOffset(id, 0), true);
+            assert.strictEqual(iptvCtx.IPTV.getPlaylists()[0].archiveOffset, undefined);
+
+            // Reject outside archiveDays (older than 7 days)
+            const tooOldStart = (fixedNowMs / 1000) - (8 * 86400);
+            assert.strictEqual(iptvCtx.IPTV.catchupUrl(chArch.id, tooOldStart, tooOldStart + 2700), '');
+
+            // Reject currently airing (progStopSec > now) and future programs
+            const nowSec = fixedNowMs / 1000;
+            assert.strictEqual(iptvCtx.IPTV.catchupUrl(chArch.id, nowSec - 600, nowSec + 600), '');
+            assert.strictEqual(iptvCtx.IPTV.catchupUrl(chArch.id, nowSec + 3600, nowSec + 5400), '');
+
+            // Reject channel without archive
+            assert.strictEqual(iptvCtx.IPTV.catchupUrl(chNoArch.id, start18, stop1845), '');
+
+            // HLS format produces .m3u8
+            assert.strictEqual(iptvCtx.IPTV.setXtreamFormat(id, 'hls'), true);
+            await iptvCtx.IPTV.load(true);
+            assert.strictEqual(
+                iptvCtx.IPTV.catchupUrl(chArch.id, start18, stop1845),
+                'http://host:8080/timeshift/user/pass/45/2026-11-16:18-00/12345.m3u8'
+            );
+        } finally {
+            Date.now = realNow;
+        }
     });
 
     await runTest('m3uStreamParser (Streaming chunked M3U parser)', async () => {
