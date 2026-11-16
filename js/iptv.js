@@ -685,8 +685,9 @@ var IPTV = (function () {
         AR: 'AR', ARB: 'AR', ARAB: 'AR', ARABIC: 'AR',
         PT: 'PT', BR: 'BR', PL: 'PL', RU: 'RU', GR: 'GR', BE: 'BE', AT: 'AT', CH: 'CH', CA: 'CA', AU: 'AU'
     };
-    var NON_COUNTRY_2 = { TV: 1, HD: 1, SD: 1, '4K': 1, '8K': 1, IP: 1, FX: 1, VIP: 1, RAW: 1 };
-    var DECOR_BOUND = /^[\s\-=_*#|┃│─═•·.+~<>✦★☆●◆■▲►»«]+|[\s\-=_*#|┃│─═•·.+~<>✦★☆●◆■▲►»«]+$/g;
+    var NON_COUNTRY_2 = { TV: 1, HD: 1, SD: 1, '4K': 1, '8K': 1, IP: 1, FX: 1, VIP: 1, RAW: 1, EU: 1, WW: 1, INT: 1, ALL: 1 };
+    var REGION_PREFIX_RE = /^(?:EU|EUROPE|EUROP|WW|INTL?|WORLD|ALL|GLOBAL)\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*/i;
+    var DECOR_BOUND = /^[\s\-=_*#|┃│║∣ǀ─═•·.+~<>✦★☆●◆■▲►»«]+|[\s\-=_*#|┃│║∣ǀ─═•·.+~<>✦★☆●◆■▲►»«]+$/g;
     var DIVIDER_WORDS = /^(?:separator|divider|section|group|category|kategori|placeholder|empty|none)$/i;
     var ADULT_RE = /(?:^|[^0-9])(?:18\+|\+18|₊₁₈)|\b(?:xxx|adult|porn|porno|erotic|erotik|nsfw|sex|brazzers|playboy|hustler|redlight|dorcel|venus)\b/i;
 
@@ -700,12 +701,12 @@ var IPTV = (function () {
         return ADULT_RE.test((c.group || '') + ' ' + (c.name || ''));
     }
     function countryFromText(s) {
-        var t = ('' + (s || '')).trim().replace(/^[\[({|┃]+\s*/, '');
-        var m = /^([A-Za-z]{2,12})(?:\s*[:|\-┃\/\])]|$)/.exec(t);
+        var t = ('' + (s || '')).trim().replace(REGION_PREFIX_RE, '').replace(/^[\[({|┃│║∣ǀ]+\s*/, '');
+        var m = /^([A-Za-z]{2,12})(?:\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/\])]|\s+|$)/.exec(t);
         if (!m) { return ''; }
         var tok = m[1].toUpperCase();
         if (COUNTRY_WORDS[tok]) { return COUNTRY_WORDS[tok]; }
-        if (/^[A-Z]{2}$/.test(tok) && !NON_COUNTRY_2[tok] && /[:|\-┃\/\])]/.test(t.slice(tok.length, tok.length + 3))) { return tok; }
+        if (/^[A-Z]{2}$/.test(tok) && !NON_COUNTRY_2[tok] && /[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/\])]/.test(t.slice(tok.length, tok.length + 3))) { return tok; }
         return '';
     }
     function extractCountry(group, name) {
@@ -713,12 +714,12 @@ var IPTV = (function () {
     }
     var KEEP_UPPER = { TR: 1, UK: 1, NL: 1, DE: 1, US: 1, FR: 1, ES: 1, IT: 1, AR: 1, TV: 1, HD: 1, FHD: 1, UHD: 1, '4K': 1, '8K': 1, HEVC: 1, VIP: 1, NBA: 1, UFC: 1, NHL: 1, NFL: 1, MLB: 1, F1: 1, PPV: 1, VOD: 1, CNN: 1, BBC: 1, TRT: 1 };
     function cleanGroup(group, country) {
-        var g = ('' + (group || 'Live TV')).trim();
-        g = g.replace(/^([A-Za-z]{2,12})\s*[:|\-┃\/]+\s*/i, function (all, word) {
+        var g = ('' + (group || 'Live TV')).trim().replace(REGION_PREFIX_RE, '');
+        g = g.replace(/^([A-Za-z]{2,12})(?:\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*|\s+)/i, function (all, word) {
             var up = word.toUpperCase();
             return (COUNTRY_WORDS[up] || (country && up === country)) ? '' : all;
         });
-        g = g.replace(DECOR_BOUND, '').replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '').replace(/\s+(?:VIP|RAW)$/i, '').replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
+        g = g.replace(DECOR_BOUND, '').replace(/^(?:VIP|RAW)\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*/i, '').replace(/\s+(?:VIP|RAW)$/i, '').replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
         if (!g) { g = 'Live TV'; }
         g = g.split(' ').map(function (w) {
             var up = w.toUpperCase();
@@ -758,11 +759,11 @@ var IPTV = (function () {
             var up = c.toUpperCase();
             return (COUNTRY_WORDS[up] || up === country) ? '' : all;
         });
-        s = s.replace(/^([A-Za-z]{2,4})\s*[:|\-┃\/]+\s*/i, function (all, c) {
+        s = s.replace(/^([A-Za-z]{2,4})\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*/i, function (all, c) {
             var up = c.toUpperCase();
             return (COUNTRY_WORDS[up] || up === country) ? '' : all;
         });
-        s = s.replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '');
+        s = s.replace(/^(?:VIP|RAW)\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*/i, '');
         var stripped = s.replace(/\[(?:4k|uhd|fhd|hd|sd|hevc|h\.?26[45]|vip|raw|backup|yedek|1080p|720p|50fps|60fps)\]/ig, ' ')
             .replace(/\((?:4k|uhd|fhd|hd|sd|hevc|h\.?26[45]|vip|raw|backup|yedek|1080p|720p|50fps|60fps)\)/ig, ' ');
         if (country) {
@@ -1306,28 +1307,21 @@ var IPTV = (function () {
             var list = getPlaylists(), pl = list[find(list, c._playlistId)];
             if (isStalker(pl)) { return stalkerStreams(c, pl); }
             var variants = (Array.isArray(c.variants) && c.variants.length > 1) ? c.variants : null;
-            return youTubeEnd(c.url).then(function (page) {
-                if (page && !variants) { return [{ url: page, _yt: true, ytPage: page, name: c.name, title: 'YouTube · ' + c.group }]; }
-                if (!variants) { return plainStreams(c); }
-                var out = [];
-                variants.forEach(function (v, idx) {
-                    if (idx === 0 && page) {
-                        out.push({ url: page, _yt: true, ytPage: page, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
-                        return;
-                    }
-                    if (v._yt) {
-                        out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
-                        return;
-                    }
-                    var vpl = list[find(list, v._playlistId)];
-                    if (isStalker(vpl)) { return; }
-                    var st = plainStreams(v)[0];
-                    var from = sourceOf(v);
-                    st.title = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
-                    out.push(st);
-                });
-                return out.length ? out : plainStreams(c);
+            if (!variants) { return plainStreams(c); }
+            var out = [];
+            variants.forEach(function (v) {
+                if (v._yt) {
+                    out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
+                    return;
+                }
+                var vpl = list[find(list, v._playlistId)];
+                if (isStalker(vpl)) { return; }
+                var st = plainStreams(v)[0];
+                var from = sourceOf(v);
+                st.title = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
+                out.push(st);
             });
+            return out.length ? out : plainStreams(c);
         });
     }
     function plainStreams(c) {

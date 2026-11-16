@@ -1245,7 +1245,37 @@ var ViewParts = {};
                 U.toast(U.t('No playable source for {name}', { name: ch.name }));
                 return;
             }
-            var chosen = (typeof opts.streamIndex === 'number' && playable[opts.streamIndex]) ? playable[opts.streamIndex] : playable[0];
+            var chosenIdx = (typeof opts.streamIndex === 'number' && playable[opts.streamIndex]) ? opts.streamIndex : 0;
+            var chosen = playable[chosenIdx];
+            // Build fallback candidates: all collapsed variants plus HLS mirror if primary Xtream TS fails
+            var candidates = playable.slice(0);
+            if (chosen && chosen.url && /\.ts(?:[?#]|$)/i.test(chosen.url) && /\/live\/[^\/?#]+\/[^\/?#]+\/\d+\.ts/i.test(chosen.url)) {
+                var hlsAlt = Object.assign({}, chosen, {
+                    url: chosen.url.replace(/\.ts([?#]|$)/i, '.m3u8$1'),
+                    title: (chosen.title || ch.name) + ' · HLS'
+                });
+                if (!candidates.some(function (s) { return s.url === hlsAlt.url; })) { candidates.push(hlsAlt); }
+            }
+            function nextLiveSource(tried) {
+                var seenUrls = {};
+                candidates.forEach(function (s, idx) { if (tried.indexOf(s.url) !== -1 || idx === chosenIdx) { seenUrls[s.url] = 1; } });
+                for (var cIdx = 0; cIdx < candidates.length; cIdx++) {
+                    var cand = candidates[cIdx];
+                    if (cand && cand.url && tried.indexOf(cand.url) === -1 && (!chosen || cand.url !== chosen.url)) {
+                        chosenIdx = cIdx;
+                        chosen = cand;
+                        return {
+                            total: candidates.length,
+                            source: {
+                                url: cand.url,
+                                stream: cand,
+                                headers: U.sanitizeHeaders(cand._headers)
+                            }
+                        };
+                    }
+                }
+                return null;
+            }
             function zapStep(dir) {
                 if (list.length < 2) { return; }
                 var n = list.length;
@@ -1303,8 +1333,9 @@ var ViewParts = {};
                     isLive: true,
                     fromHome: true,
                     browseOverlay: browse,
-                    streams: playable,
+                    streams: candidates,
                     stream: chosen,
+                    nextSource: candidates.length > 1 ? nextLiveSource : null,
                     formatInfo: Stremio.streamInfo ? Stremio.streamInfo(chosen) : null,
                     _headers: U.sanitizeHeaders(chosen._headers) || undefined,
                     zap: list.length > 1 ? zapStep : null,

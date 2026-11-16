@@ -454,9 +454,9 @@ function loadBrowserScript(file, extraGlobals) {
 
     const sandbox = {
         Buffer,
-        setTimeout,
+        setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
         clearTimeout,
-        setInterval,
+        setInterval: (fn, ms) => { const t = setInterval(fn, ms); if (t && t.unref) t.unref(); return t; },
         clearInterval,
         setImmediate,
         clearImmediate,
@@ -1470,16 +1470,21 @@ async function run() {
                 removeChild: (c) => { const i = node.children.indexOf(c); if (i !== -1) node.children.splice(i, 1); return c; },
                 addEventListener: (ev, fn) => { node.listeners[ev] = fn; },
                 querySelector: (sel) => {
-                    const cls = sel.replace(/^\./, '');
-                    const walk = (root) => {
+                    const chain = sel.trim().split(/\s+/);
+                    const matchOne = (el, part) => el.classList && part.split('.').filter(Boolean).every((c) => el.classList.contains(c));
+                    const findChain = (root, idx) => {
                         for (const ch of root.children) {
-                            if (ch.classList && ch.classList.contains(cls)) return ch;
-                            const nested = walk(ch);
+                            if (matchOne(ch, chain[idx])) {
+                                if (idx === chain.length - 1) return ch;
+                                const sub = findChain(ch, idx + 1);
+                                if (sub) return sub;
+                            }
+                            const nested = findChain(ch, idx);
                             if (nested) return nested;
                         }
                         return null;
                     };
-                    return walk(node);
+                    return findChain(node, 0);
                 },
                 querySelectorAll: (sel) => {
                     const out = [];
@@ -1548,6 +1553,402 @@ async function run() {
         assert.strictEqual(next, false);
         assert.strictEqual(wrap.querySelectorAll('.iptv-row').length, 10);
         assert.strictEqual(focused.__absIdx, 10);
+    });
+
+    await runTest('IPTV tidier edge cases (EU wrapper, Unicode pipes, space-separated UK, skip Xtream XHR probe)', async () => {
+        const m3u = [
+            '#EXTM3U',
+            '#EXTINF:-1 tvg-id="bbc1.uk" group-title="EU | UK GENERAL",UK| BBC 1 HD',
+            'http://xt.example.com/live/user1/pass1/1001.ts',
+            '#EXTINF:-1 tvg-id="bbc1.uk" group-title="EU | UK GENERAL",BBC 1 FHD',
+            'http://xt.example.com/live/user1/pass1/1002.ts',
+            '#EXTINF:-1 tvg-id="trt1.tr" group-title="TR | \u2726 ULUSAL VIP \u2726",TR \u2502 TRT 1 4K',
+            'http://xt.example.com/live/user1/pass1/2001.ts'
+        ].join('\n');
+
+        let xhrCalls = 0;
+        function MockXHR() { this.readyState = 0; }
+        MockXHR.prototype.open = () => { xhrCalls++; };
+        MockXHR.prototype.send = () => {};
+
+        const ctx = loadBrowserScript('js/iptv.js', {
+            XMLHttpRequest: MockXHR
+        });
+        ctx.IPTV.reset();
+        ctx.U.store.set('stremiok.prefs', {
+            iptvTidy: true,
+            iptvHideAdult: true,
+            iptvCollapseVariants: true,
+            iptvCountries: 'UK, TR'
+        });
+
+        // Parse M3U via internal finish/m3uReader path or load from inline source cache:
+        // Exercise cleanGroup, countryFromText, cleanChannelName via addPlaylist + load:
+        ctx.U.getText = () => Promise.resolve(m3u);
+        ctx.IPTV.addPlaylist('http://xt.example.com/get.php?username=u&password=p&type=m3u_plus', 'MyIPTV');
+        await ctx.IPTV.load(true);
+        const list = ctx.IPTV.channels();
+        const bbc = list.find((c) => c.name === 'BBC 1');
+        assert.ok(bbc, 'UK| BBC 1 HD should normalize to BBC 1');
+        assert.strictEqual(bbc._country, 'UK');
+        assert.strictEqual(bbc.group, 'UK · General');
+        assert.strictEqual(bbc.variants.length, 2, 'BBC 1 HD and BBC 1 FHD should collapse into variants');
+
+        const trt = list.find((c) => c.name === 'TRT 1');
+        assert.ok(trt, 'TR Unicode pipe channel should normalize to TRT 1');
+        assert.strictEqual(trt.group, 'TR · Ulusal');
+
+        const stList = await ctx.IPTV.streams(bbc.id);
+        assert.ok(Array.isArray(stList) && stList.length >= 2);
+        assert.strictEqual(xhrCalls, 0, 'Xtream /live/ streams(id) must not probe youTubeEnd over HTTP');
+    });
+
+    await runTest('viewIptv EPG burst coalescing prevents inspector wipe & preserves focus', async () => {
+        const makeEl = (id, tag) => {
+            const clsSet = new Set();
+            const attrs = {};
+            const node = {
+                id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
+                children: [], parentNode: null, listeners: {},
+                setAttribute: (k, v) => { attrs[k] = String(v); },
+                getAttribute: (k) => Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null,
+                contains: (other) => other === node || node.children.some((c) => c.contains && c.contains(other)),
+                classList: {
+                    add: (c) => { clsSet.add(c); node.className = Array.from(clsSet).join(' '); },
+                    remove: (c) => { clsSet.delete(c); node.className = Array.from(clsSet).join(' '); },
+                    contains: (c) => clsSet.has(c)
+                },
+                appendChild: (c) => { c.parentNode = node; node.children.push(c); return c; },
+                removeChild: (c) => { const i = node.children.indexOf(c); if (i !== -1) node.children.splice(i, 1); return c; },
+                addEventListener: (ev, fn) => { node.listeners[ev] = fn; },
+                querySelector: (sel) => {
+                    const chain = sel.trim().split(/\s+/);
+                    const matchOne = (el, part) => el.classList && part.split('.').filter(Boolean).every((c) => el.classList.contains(c));
+                    const findChain = (root, idx) => {
+                        for (const ch of root.children) {
+                            if (matchOne(ch, chain[idx])) {
+                                if (idx === chain.length - 1) return ch;
+                                const sub = findChain(ch, idx + 1);
+                                if (sub) return sub;
+                            }
+                            const nested = findChain(ch, idx);
+                            if (nested) return nested;
+                        }
+                        return null;
+                    };
+                    return findChain(node, 0);
+                },
+                querySelectorAll: (sel) => {
+                    const out = [];
+                    const parts = sel.split('.').filter(Boolean);
+                    const walk = (root) => {
+                        for (const ch of root.children) {
+                            if (parts.every((p) => ch.classList && ch.classList.contains(p))) out.push(ch);
+                            walk(ch);
+                        }
+                    };
+                    walk(node);
+                    return out;
+                }
+            };
+            return node;
+        };
+
+        const channels = [{
+            id: 'iptv:bbc1',
+            type: 'tv',
+            name: 'BBC One',
+            group: 'UK · General',
+            logo: '',
+            variants: [{ id: 'iptv:bbc1', badge: 'FHD', rawName: 'BBC One FHD' }],
+            _qBadge: 'FHD'
+        }];
+
+        let inspClears = 0;
+        const wrap = makeEl('rows', 'DIV');
+        const baseCtx = loadBrowserScript('js/iptv.js');
+        const extraU = Object.assign({}, baseCtx.U, {
+            el: (tag, cls, txt) => {
+                const n = makeEl('', (tag || 'div').toUpperCase());
+                if (cls) cls.split(/\s+/).forEach((c) => { if (c) n.classList.add(c); });
+                if (txt !== undefined) n.textContent = String(txt);
+                return n;
+            },
+            clear: (n) => {
+                if (n && n.classList && n.classList.contains('iptv-insp')) { inspClears++; }
+                n.children = [];
+                n.textContent = '';
+            },
+            toast: () => {}
+        });
+
+        let epgListener = null;
+        let schedCalls = 0;
+        let progTitle = 'Program Alpha';
+        let focused = null;
+        const ctx = loadBrowserScript('js/view-iptv.js', {
+            U: extraU,
+            ViewParts: { scr: () => wrap, pickList: () => {}, refreshAddonRows: () => {} },
+            IPTV: { channels: () => channels, isFavorite: () => false, getTidyCfg: () => ({ enabled: true, countries: ['UK'] }) },
+            EPG: {
+                want: () => {},
+                now: () => ({ now: { title: progTitle, start: 1000, stop: 2000, progress: 0.4 } }),
+                schedule: () => {
+                    schedCalls++;
+                    return Promise.resolve([
+                        { title: progTitle, start: 1000, stop: 2000 },
+                        { title: 'Next Show 1', start: 2000, stop: 3000 },
+                        { title: 'Next Show 2', start: 3000, stop: 4000 }
+                    ]);
+                },
+                onChange: (fn) => { epgListener = fn; },
+                hhmm: () => '20:00',
+                hasGuide: () => true,
+                logo: () => ''
+            },
+            Player: { isLivePlaying: () => false, currentLiveId: () => '', onLiveMetaChange: () => () => {} },
+            Stremio: { getPrefs: () => ({ liveBrowseMode: true }) },
+            Focus: {
+                current: () => focused,
+                setFocus: (n) => { focused = n; },
+                setScope: (s, n) => { focused = n || focused; }
+            },
+            document: { documentElement: wrap, contains: () => true }
+        });
+        wrap.contains = () => true;
+        ctx.ViewParts.iptvBrowser(wrap);
+        await new Promise((r) => setTimeout(r, 120));
+
+        const clearsAfterRender = inspClears;
+        const schedAfterRender = schedCalls;
+        const favBtn = wrap.querySelector('.iptv-act-btn');
+        assert.ok(favBtn, 'Inspector action button must exist');
+        focused = favBtn;
+
+        progTitle = 'Program Beta';
+        for (let i = 0; i < 5; i++) { epgListener(); }
+        await new Promise((r) => setTimeout(r, 120));
+
+        assert.strictEqual(inspClears, clearsAfterRender, 'EPG bursts must update inspector in place without clearing .iptv-insp');
+        assert.strictEqual(schedCalls, schedAfterRender, 'EPG bursts for same channel must not re-query EPG.schedule');
+        assert.strictEqual(focused, favBtn, 'Focus inside inspector must survive EPG updates');
+        const nowNode = wrap.querySelector('.iptv-epg-main-title');
+        assert.ok(nowNode && nowNode.textContent.indexOf('Program Beta') !== -1, 'Inspector live title must update in place');
+        ctx.ViewParts.iptvLeave();
+    });
+
+    await runTest('zapLiveChannel fallback chain (collapsed variants + Xtream .ts -> .m3u8 mirror)', async () => {
+        let playedCtx = null;
+        const streamsById = {
+            'iptv:ch-4k': [
+                { url: 'http://xt.example.com/live/u/p/101.ts', title: '4K' },
+                { url: 'http://xt.example.com/live/u/p/102.ts', title: 'FHD' }
+            ]
+        };
+        const ch = {
+            id: 'iptv:ch-4k',
+            name: 'Sky Sports',
+            group: 'UK · Sports',
+            variants: [
+                { id: 'iptv:ch-4k', badge: '4K' },
+                { id: 'iptv:ch-fhd', badge: 'FHD' }
+            ]
+        };
+        const ctx = loadBrowserScript('js/view-core.js', {
+            IPTV: {
+                channels: () => [ch],
+                rawChannels: () => [ch],
+                streams: (id) => Promise.resolve(streamsById[id] || []),
+                catchupUrl: () => null
+            },
+            EPG: { now: () => null, logo: () => '', onChange: () => {} },
+            Player: { play: (c) => { playedCtx = c; } },
+            App: { showScreen: () => {} },
+            Stremio: {
+                getStreams: (type, id) => Promise.resolve(streamsById[id] || []),
+                isPlayable: (s) => !!(s && s.url),
+                sourceId: (s) => (s && s.url) || '',
+                streamInfo: () => ({})
+            },
+            Focus: { current: () => null, setFocus: () => {}, setScope: () => {}, backScope: () => {}, onFocus: () => {} },
+            U: { toast: () => {}, spinner: () => {}, log: () => {}, sanitizeHeaders: (h) => h, t: (s) => s, listOf: (x) => Array.isArray(x) ? x : [], el: () => ({}), clear: () => {} }
+        });
+
+        await ctx.ViewParts.zapLiveChannel(ch, { browseOverlay: true, fromHome: true });
+        await new Promise((r) => setTimeout(r, 30));
+        assert.ok(playedCtx && typeof playedCtx.nextSource === 'function', 'zapLiveChannel must attach ctx.nextSource');
+        assert.strictEqual(playedCtx.url, 'http://xt.example.com/live/u/p/101.ts');
+
+        const tried = [playedCtx.url];
+        const s1 = playedCtx.nextSource(tried);
+        assert.strictEqual(s1.source.url, 'http://xt.example.com/live/u/p/102.ts', 'First fallback tries next variant');
+        tried.push(s1.source.url);
+        const s2 = playedCtx.nextSource(tried);
+        assert.strictEqual(s2.source.url, 'http://xt.example.com/live/u/p/101.m3u8', 'Next fallback tries .m3u8 mirror for primary stream');
+        tried.push(s2.source.url);
+        assert.strictEqual(playedCtx.nextSource(tried), null, 'Exhausted candidate list returns null');
+    });
+
+    await runTest('player-core AVPlay stop-before-close on live zap, browseOverlay buffering, and live nextSourceOnFail', async () => {
+        const calls = [];
+        let activeListener = null;
+        let avState = 'NONE';
+        const mockAvplay = {
+            open: (u) => { calls.push('open:' + u); avState = 'IDLE'; },
+            stop: () => { calls.push('stop'); avState = 'IDLE'; },
+            close: () => { calls.push('close'); avState = 'NONE'; },
+            setListener: (l) => { activeListener = l; },
+            prepareAsync: (ok) => { calls.push('prepareAsync'); ok(); },
+            play: () => { calls.push('play'); avState = 'PLAYING'; },
+            getState: () => avState,
+            getDuration: () => 0,
+            getCurrentTime: () => 0,
+            getTotalTrackInfo: () => [],
+            getCurrentStreamInfo: () => [],
+            setDisplayRect: () => {},
+            setDisplayMethod: () => {},
+            setBufferingParam: () => {},
+            setStreamingProperty: () => {},
+            setSilentSubtitle: () => {},
+            seekTo: () => {},
+            suspend: () => {},
+            restore: () => {}
+        };
+
+        const makeEl = (id, tag) => {
+            const clsSet = new Set();
+            const node = {
+                id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
+                children: [], parentNode: null, listeners: {},
+                setAttribute: () => {}, getAttribute: () => null, contains: () => false,
+                classList: {
+                    add: (c) => { clsSet.add(c); node.className = Array.from(clsSet).join(' '); },
+                    remove: (c) => { clsSet.delete(c); node.className = Array.from(clsSet).join(' '); },
+                    contains: (c) => clsSet.has(c)
+                },
+                appendChild: (c) => { c.parentNode = node; node.children.push(c); return c; },
+                removeChild: (c) => { const i = node.children.indexOf(c); if (i !== -1) node.children.splice(i, 1); return c; },
+                addEventListener: (ev, fn) => { node.listeners[ev] = fn; },
+                querySelector: () => null,
+                querySelectorAll: () => []
+            };
+            return node;
+        };
+
+        const byIdMap = {};
+        ['app', 'player-osd', 'osd-title', 'osd-subtitle', 'osd-tags', 'osd-logo', 'osd-badges',
+         'osd-time', 'osd-progress', 'osd-fill', 'osd-thumb', 'osd-scrub', 'osd-scrub-time',
+         'osd-scrub-pic', 'osd-hint', 'subs', 'subs2', 'sub-menu', 'player-bar', 'stream-info',
+         'skip-prompt', 'channel-drawer'].forEach((id) => {
+            byIdMap[id] = makeEl(id, 'DIV');
+        });
+        const bodyEl = makeEl('body', 'BODY');
+        const spinnerCalls = [];
+        const baseCtx = loadBrowserScript('js/iptv.js');
+        const extraU = Object.assign({}, baseCtx.U, {
+            byId: (id) => byIdMap[id] || makeEl(id),
+            el: (tag, cls, txt) => {
+                const n = makeEl('', (tag || 'div').toUpperCase());
+                if (cls) cls.split(/\s+/).forEach((c) => { if (c) n.classList.add(c); });
+                if (txt !== undefined) n.textContent = String(txt);
+                return n;
+            },
+            clear: (n) => { n.children = []; n.textContent = ''; },
+            getText: () => Promise.resolve(''),
+            getJSON: () => Promise.resolve(null),
+            listOf: (x) => Array.isArray(x) ? x : [],
+            fmtTime: () => '0:00',
+            whenVisible: () => {},
+            cancelToken: () => ({ cancelled: false, cancel: function () { this.cancelled = true; } }),
+            crumb: () => {}, zoom: () => 1, fromUTF8: (b) => b, toUTF8: (s) => s, loadScript: () => Promise.resolve(),
+            deferImage: () => {}, cardImage: () => {}, qrCanvas: () => {},
+            toast: () => {},
+            spinner: (on, msg) => { spinnerCalls.push({ on: !!on, msg: msg || '' }); },
+            startOledOrbit: () => {},
+            stopOledOrbit: () => {}
+        });
+
+        const ctx = loadBrowserScript([
+            'js/stremio.js',
+            'js/player-core.js',
+            'js/player-store.js',
+            'js/player-lang.js',
+            'js/player-quality.js',
+            'js/player-subs.js',
+            'js/player-audio.js',
+            'js/player-controls.js',
+            'js/player.js'
+        ], {
+            setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
+            setInterval: (fn, ms) => { const t = setInterval(fn, ms); if (t && t.unref) t.unref(); return t; },
+            webapis: { avplay: mockAvplay },
+            U: extraU,
+            document: {
+                body: bodyEl,
+                documentElement: bodyEl,
+                getElementById: (id) => byIdMap[id] || null,
+                createElement: extraU.el,
+                querySelector: () => null,
+                querySelectorAll: () => [],
+                addEventListener: () => {},
+                removeEventListener: () => {}
+            }
+        });
+
+        const metaEvents = [];
+        ctx.Player.onLiveMetaChange((m) => metaEvents.push(Object.assign({}, m)));
+        ctx.Player.init();
+
+        ctx.Player.play({
+            url: 'http://xt.example.com/live/u/p/101.ts',
+            stream: { url: 'http://xt.example.com/live/u/p/101.ts' },
+            type: 'tv',
+            id: 'iptv:ch1',
+            name: 'Channel 1',
+            isLive: true,
+            browseOverlay: true,
+            fromHome: true,
+            nextSource: (tried) => tried.length === 1 ? {
+                source: { url: 'http://xt.example.com/live/u/p/101.m3u8', stream: { url: 'http://xt.example.com/live/u/p/101.m3u8' } },
+                total: 2
+            } : null
+        });
+
+        assert.ok(activeListener, 'AVPlay listener attached');
+        spinnerCalls.length = 0;
+        activeListener.onbufferingstart();
+        assert.strictEqual(spinnerCalls.some((s) => s.on), false, 'browseOverlay buffering must not show blocking fullscreen spinner');
+        assert.strictEqual(ctx.Player.liveMeta().buffering, true, 'liveMeta().buffering must turn true on onbufferingstart');
+        activeListener.onbufferingcomplete();
+        assert.strictEqual(ctx.Player.liveMeta().buffering, false, 'liveMeta().buffering must turn false on onbufferingcomplete');
+
+        // Error before playing on live stream must trigger nextSourceOnFail -> .m3u8
+        calls.length = 0;
+        activeListener.onerror('PLAYER_ERROR_NOT_SUPPORTED_FORMAT');
+        await new Promise((r) => setTimeout(r, 250));
+        const stopIdx = calls.indexOf('stop');
+        const closeIdx = calls.indexOf('close');
+        const m3u8OpenIdx = calls.indexOf('open:http://xt.example.com/live/u/p/101.m3u8');
+        assert.ok(stopIdx !== -1 && closeIdx !== -1 && stopIdx < closeIdx, 'Live switch/fallback must call avplay.stop() before avplay.close()');
+        assert.ok(m3u8OpenIdx > closeIdx, 'Live onerror must open fallback .m3u8 URL after closing failed stream; calls=' + JSON.stringify(calls) + ' ctx=' + JSON.stringify({ active: ctx.Player.isLivePlaying(), liveId: ctx.Player.currentLiveId() }));
+
+        // Direct zap from active live channel A to live channel B must also stop-then-close with settle delay
+        calls.length = 0;
+        ctx.Player.play({
+            url: 'http://xt.example.com/live/u/p/202.ts',
+            stream: { url: 'http://xt.example.com/live/u/p/202.ts' },
+            type: 'tv',
+            id: 'iptv:ch2',
+            name: 'Channel 2',
+            isLive: true,
+            browseOverlay: true
+        });
+        assert.strictEqual(calls.indexOf('open:http://xt.example.com/live/u/p/202.ts'), -1, 'Switching active live channel must wait settle delay before opening next');
+        await new Promise((r) => setTimeout(r, 180));
+        assert.ok(calls.indexOf('stop') !== -1 && calls.indexOf('stop') < calls.indexOf('close'));
+        assert.ok(calls.indexOf('close') < calls.indexOf('open:http://xt.example.com/live/u/p/202.ts'));
+
+        ctx.Player.exit();
     });
 
     console.log('\n===========================');

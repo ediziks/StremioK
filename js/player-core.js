@@ -366,7 +366,8 @@ var PlayerParts = {};
             codec: a.codec || '', width: +a.width || 0, height: +a.height || 0,
             fps: +a.fps || 0, bitrate: +a.bitrate || 0,
             audio: a.audio || '', channels: +a.channels || 0,
-            tags: currentTagsText(), browseOverlay: !!S.browseOverlay
+            tags: currentTagsText(), browseOverlay: !!S.browseOverlay,
+            buffering: !!S.buffering
         };
     }
     function onLiveMetaChange(fn) {
@@ -471,6 +472,7 @@ var PlayerParts = {};
     function formatStart(ctx) {
         if (!S.isLive || !ctx.id || !liveFormat(ctx._ownUrl || ctx.url)) { return; }
         if (!ctx._ownUrl) { ctx._ownUrl = ctx.url; }
+        if (ctx._tried && ctx._tried.length) { return; }
         var want = (U.store.get(FORMAT_KEY, {}) || {})[ctx.id];
         ctx.url = (want === 'ts' || want === 'hls') ? withFormat(ctx._ownUrl, want) : ctx._ownUrl;
     }
@@ -500,7 +502,7 @@ var PlayerParts = {};
     // is what's learned from it (s.stream, through ctx.learnFor); the title, its episodes and
     // whether it's private stay.
     var SOURCE_FIELDS = ['url', 'variantUrl', 'initialQualityHeight', 'yt', 'ytLang', '_headers', 'localSubs', 'localFile', 'subExtra', 'sourceSubs', 'formatInfo', 'onStarted', 'onFailed', 'stream',
-        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix'];
+        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_liveChecked'];
     // keep: a source that didn't start gives way to the next (nextSourceOnFail): the same place to
     // resume, and Play from the start as it was.
     function replaceSource(s, keep) {
@@ -580,9 +582,10 @@ var PlayerParts = {};
     P.fileInfoFor = function (ctx) { var j = fileInfoAsk(ctx); return j ? _miSeen.get(j.key) || null : null; };
 
     function play(ctx, onExit) {
-        // Replacing a YouTube stream that's playing (CH+/CH− to the next channel): the TV's
-        // player can freeze on an open straight after closing it, so settle first (startAV).
-        var settle = !!(S.active && S.ctx && S.ctx.yt);
+        // Switching channels/streams cleanly: stop and briefly settle Samsung AVPlay's decoder
+        // so its H.264/HEVC video plane cannot freeze while the audio stream continues.
+        var wasActive = !!(S.active && S.ctx);
+        var settle = wasActive ? (S.ctx.yt ? SETTLE_MS : 120) : 0;
         if (S.ctx !== ctx) { stopLiveLook(); }   // (another channel: the look at the one before stopped)
         stopFileLook();
         S.ctx = ctx; _onExit = onExit;
@@ -838,12 +841,11 @@ var PlayerParts = {};
         _lastTickMs = null; _playedMs = 0;
         _tick = null; _pausedOnce = false;   // (a new open: the jump watch starts over, see checkJump)
         subsBeforeOpen();   // a built-in subtitle track is selected again once this attempt plays
-        if (settle) { try { avplay.stop(); } catch (e0) {} }
-        try {
-            avplay.close();
-        } catch (e) {}
-        if (settle) {
-            setTimeout(function () { if (S.active && token === _playToken) { openAV(url, token); } }, SETTLE_MS);
+        var delay = typeof settle === 'number' ? settle : (settle ? SETTLE_MS : 0);
+        try { avplay.stop(); } catch (e0) {}
+        try { avplay.close(); } catch (e) {}
+        if (delay > 0) {
+            setTimeout(function () { if (S.active && token === _playToken) { openAV(url, token); } }, delay);
             return;
         }
         openAV(url, token);
@@ -921,11 +923,14 @@ var PlayerParts = {};
             avplay.setListener({
                 onbufferingstart: function () {
                     if (!S.active || token !== _playToken) { return; }
-                    S.buffering = true; U.spinner(true, S.playStarted ? U.t('Buffering…') : undefined);
+                    S.buffering = true;
+                    if (S.browseOverlay) { emitLiveMeta(); }
+                    else { U.spinner(true, S.playStarted ? U.t('Buffering…') : undefined); }
                 },
                 onbufferingcomplete: function () {
                     if (!S.active || token !== _playToken) { return; }
                     S.buffering = false; U.spinner(false);
+                    if (S.browseOverlay) { emitLiveMeta(); }
                     if (S.pendingSeek != null) { var pt = S.pendingSeek; S.pendingSeek = null; doAVSeek(pt, 0); }
                 },
                 onstreamcompleted: function () {
@@ -1536,8 +1541,8 @@ var PlayerParts = {};
     var NEXT_TRIES = 3, AV_START_MS = 45000, _openedAt = 0;
     function nextSourceOnFail(notice) {
         var c = S.ctx;
-        if (!c || !S.active || S.playing || S.isLive || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
-        if (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail) { return false; }
+        if (!c || !S.active || S.playing || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
+        if (!S.isLive && (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail)) { return false; }
         var tried = (c._tried || []).concat([Stremio.sourceId(c.stream)]);
         if (tried.length > NEXT_TRIES) { return false; }
         var n = null;
@@ -1548,7 +1553,8 @@ var PlayerParts = {};
         var msg = notice ? notice.text + '  ·  ' + U.t('trying the next source ({n} of {of})…', next) : U.t('Didn’t start: trying the next source ({n} of {of})…', next);
         U.log('player', 'Source didn’t start: trying the next one (' + (tried.length + 1) + ')');
         replaceSource(n.source, true);
-        U.spinner(true, msg); U.toast(msg, notice ? 7000 : 4000);
+        if (S.browseOverlay) { emitLiveMeta(); } else { U.spinner(true, msg); }
+        U.toast(msg, notice ? 7000 : 4000);
         return true;
     }
     // With Stremio's streaming server (Settings › Content › Streaming server, Convert on): a source
@@ -1621,9 +1627,11 @@ var PlayerParts = {};
     // next source when there's one; else it stops and says so (not while you've paused it). A
     // torrent through a streaming server has longer (Settings › Content › Streaming server: finding
     // people sharing it takes a while).
+    var LIVE_START_MS = 12000;
     function startMs() {
         var st = S.ctx && S.ctx.stream;
-        return (st && st._torrent && typeof Stremio !== 'undefined' && Stremio.server) ? Stremio.server().wait * 1000 : AV_START_MS;
+        if (st && st._torrent && typeof Stremio !== 'undefined' && Stremio.server) { return Stremio.server().wait * 1000; }
+        return S.isLive ? LIVE_START_MS : AV_START_MS;
     }
     function startCheck() {
         if (!S.active || S.playing || !useAV || !_openedAt || Date.now() - _openedAt < startMs()) { return; }
@@ -1802,6 +1810,10 @@ var PlayerParts = {};
     function liveCheck() {
         var ctx = S.ctx;
         if (!ctx || ctx._liveChecked || !liveFixable(ctx)) { return; }
+        // Never open a competing background HTTP connection to raw Xtream live streams (causes
+        // 1-connection IPTV providers to drop or freeze the active AVPlay video/audio stream).
+        var cleanU = (ctx.url || '').replace(/[?#].*$/, '').replace(/\.[a-z0-9]+$/i, '');
+        if (XT_LIVE_PATH.test(cleanU) && !ctx._needLiveLook) { return; }
         ctx._liveChecked = true;
         var known = liveKnown(ctx.url);
         if (known && ccOf(known) && known.lv === LIVE_LOOK) { return; }   // (one kept by an older look: looked at again, once)

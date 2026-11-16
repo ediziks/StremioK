@@ -157,14 +157,17 @@
     function tryAutoFallback() {
         if (_autoRetried || !S.ctx) { return false; }
         var wasAuto = (_qualityBw == null && !S.ctx.initialQualityHeight);   // a plain stream already in Auto
+        // Live channel already in Auto with backup sources: skip re-opening the same broken URL
+        // and let nextSourceOnFail advance directly to the next variant or .m3u8 mirror.
+        if (S.isLive && wasAuto && typeof S.ctx.nextSource === 'function') { return false; }
         _autoRetried = true;
         _qualityBw = null;
         S.ctx.initialQualityHeight = 0;
         S.ctx.resumeSec = S.isLive ? 0 : S.cur;
         if (S.ctx.yt && typeof YTPlay !== 'undefined') { S.ctx.url = YTPlay.resolverUrl(S.ctx.yt, 0, true, S.ctx.ytLang); }
         _startNote = wasAuto ? '' : U.t('Playing with Auto quality');
-        U.spinner(true, wasAuto ? U.t('Stream didn\'t start — retrying…') : U.t('Retrying with Auto quality…'));
-        if (P.useAV) { startAV(S.ctx.url); } else { startHTML5(S.ctx.url); }
+        if (!S.browseOverlay) { U.spinner(true, wasAuto ? U.t('Stream didn\'t start — retrying…') : U.t('Retrying with Auto quality…')); }
+        if (P.useAV) { startAV(S.ctx.url, S.isLive ? 120 : true); } else { startHTML5(S.ctx.url); }
         return true;
     }
 
