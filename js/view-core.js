@@ -181,6 +181,54 @@ var ViewParts = {};
             poll();
         }, function () { if (!over) { how.textContent = U.t('Your phone can’t reach the TV just now (no home network, or StremioK’s service isn’t running).'); } });
     }
+    function phoneGroups(title, payload, onSaved) {
+        var existing = document.querySelector('.modal-overlay');
+        if (existing) { existing.parentNode.removeChild(existing); }
+        var overlay = U.el('div', 'modal-overlay'), box = U.el('div', 'modal-box qr-box');
+        box.appendChild(U.el('div', 'modal-msg', title));
+        var spot = U.el('div', 'qr-spot'), how = U.el('div', 'qr-note', U.t('Opening the page for your phone…')), link = U.el('div', 'qr-link', '');
+        box.appendChild(spot); box.appendChild(link); box.appendChild(how);
+        var row = U.el('div', 'modal-row'), cancel = U.el('div', 'pill focusable modal-btn', U.t('Cancel'));
+        var token = null, timer = null, over = false;
+        function stop() {
+            over = true;
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (token && YTPlay.entryClose) { YTPlay.entryClose(token); token = null; }
+            try { document.removeEventListener('visibilitychange', hidden, false); } catch (e) {}
+        }
+        function hidden() { if (U.isHidden && U.isHidden() && !over) { closeModal(); } }
+        try { document.addEventListener('visibilitychange', hidden, false); } catch (e) {}
+        cancel.__onselect = function () { closeModal(); };
+        row.appendChild(cancel); box.appendChild(row); overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        showModal(overlay, cancel);
+        onModalClose(stop);
+        function poll() {
+            timer = setTimeout(function () {
+                timer = null;
+                if (over || !token) { return; }
+                YTPlay.entryPoll(token).then(function (text) {
+                    if (over) { return; }
+                    if (text === null) { poll(); return; }
+                    token = null;
+                    closeModal();
+                    var keys = null;
+                    try { keys = JSON.parse(text); } catch (e) { keys = null; }
+                    if (Array.isArray(keys)) { onSaved(keys); }
+                }, function () { if (!over) { how.textContent = U.t('The phone page closed. Try again.'); token = null; } });
+            }, ENTRY_POLL_MS);
+        }
+        if (typeof YTPlay === 'undefined' || !YTPlay.entryOpenGroups) { how.textContent = U.t('It needs StremioK’s service on the TV (not in a desktop browser).'); return; }
+        YTPlay.entryOpenGroups(payload).then(function (r) {
+            if (over) { if (r && r.token) { YTPlay.entryClose(r.token); } return; }
+            if (!r || !r.url) { throw new Error('no page'); }
+            token = r.token;
+            spot.appendChild(qrSpotCanvas(r.url));
+            link.textContent = r.url;
+            how.textContent = U.t('Waiting for your phone… Scan it on the same Wi-Fi, choose your groups, and tap Save to TV.');
+            poll();
+        }, function () { if (!over) { how.textContent = U.t('Your phone can’t reach the TV just now (no home network, or StremioK’s service isn’t running).'); } });
+    }
 
     // Show `overlay` (already in the page) as the modal: focus moves into it, and
     // closeModal() returns focus to where it was on the screen underneath.
@@ -459,6 +507,50 @@ var ViewParts = {};
                 });
             }, function (e) { U.toast(U.problem(e), 5000); });
         };
+        var isStalkerPl = IPTV.isStalker(playlist);
+        var phoneGroupsBtn = U.el('div', 'pill focusable modal-btn', U.t('Edit groups on your phone'));
+        phoneGroupsBtn.__onselect = function () {
+            closeModal();
+            if (typeof YTPlay === 'undefined' || !YTPlay.entryOpenGroups) {
+                U.toast(U.t('It needs StremioK’s service on the TV (not in a desktop browser).'), 5000);
+                return;
+            }
+            U.toast(isStalkerPl ? U.t('Asking the portal for its groups…') : U.t('Asking the server for its groups…'), 4000);
+            var fetchGroups = fmt ? IPTV.xtreamGroups(playlist.id) : isStalkerPl ? IPTV.stalkerGroups(playlist.id) : IPTV.m3uGroups(playlist.id);
+            fetchGroups.then(function (list) {
+                if (!list || !list.length) {
+                    U.toast(isStalkerPl ? U.t('The portal lists no groups') : U.t('The server lists no groups'), 4000);
+                    return;
+                }
+                var onMap = Object.create(null), active = isStalkerPl ? playlist.genres : playlist.groups;
+                if (Array.isArray(active)) { active.forEach(function (k) { onMap[String(k)] = true; }); }
+                var byId = Object.create(null), payloadGroups = [];
+                list.forEach(function (g) {
+                    var id = (fmt || isStalkerPl) ? String(g.id != null ? g.id : '') : String(g.name || '');
+                    var name = isStalkerPl ? String(g.title || g.name || id) : String(g.name || id);
+                    var cnt = (typeof g.count === 'number' && g.count > 0) ? g.count : 0;
+                    if (!id) { return; }
+                    if (byId[id]) {
+                        byId[id].count += cnt;
+                    } else {
+                        byId[id] = { id: id, name: name, count: cnt, on: !!onMap[id] };
+                        payloadGroups.push(byId[id]);
+                    }
+                });
+                phoneGroups(U.t('Edit groups for “{name}”', { name: label }), { name: label, groups: payloadGroups }, function (keys) {
+                    if (isStalkerPl) { IPTV.setStalkerGroups(playlist.id, keys); } else { Stremio.iptvSetPlaylistGroups(playlist.id, keys); }
+                    refreshAddonRows('local:iptv');
+                    U.toast(U.t('Reloading playlist…'), 4000);
+                    renderSettings();
+                    Stremio.iptvReload(playlist.id).then(function () {
+                        refreshAddonRows('local:iptv');
+                        var st = Stremio.iptvStatus(playlist.id);
+                        U.toast(st.error ? U.t('Reload failed: {why}', { why: st.error }) : U.t('Loaded {n} channels', { n: st.count }), 4000);
+                        renderSettings();
+                    });
+                });
+            }, function (e) { U.toast(U.problem(e), 5000); });
+        };
         var reload = U.el('div', 'pill focusable modal-btn', U.t('Reload'));
         var remove = U.el('div', 'pill focusable modal-btn danger', U.t('Remove'));
 
@@ -540,8 +632,9 @@ var ViewParts = {};
         row.appendChild(edit);
         if (!playlist.off && typeof EPG !== 'undefined' && EPG.available && EPG.available()) { row.appendChild(guide); }
         if (!playlist.off && fmt) { row.appendChild(format); row.appendChild(xtGroups); row.appendChild(noVodBtn); }
-        if (!playlist.off && IPTV.isStalker(playlist)) { row.appendChild(groups); }
-        if (!playlist.off && !fmt && !IPTV.isStalker(playlist) && IPTV.m3uGroups) { row.appendChild(m3uGroupsBtn); }
+        if (!playlist.off && isStalkerPl) { row.appendChild(groups); }
+        if (!playlist.off && !fmt && !isStalkerPl && IPTV.m3uGroups) { row.appendChild(m3uGroupsBtn); }
+        if (!playlist.off && (fmt || isStalkerPl || IPTV.m3uGroups)) { row.appendChild(phoneGroupsBtn); }
         if (!playlist.off) { row.appendChild(reload); }
         row.appendChild(remove);
         box.appendChild(row);

@@ -84,6 +84,15 @@ var YTPlay = (function () {
     function entryOpen(what) {
         return entryAuth().then(function (a) { return U.getJSON(PROXY + '/entry/open?what=' + encodeURIComponent(what || 'link') + a.q, 8000, undefined, null, a.h); });
     }
+    function entryOpenGroups(payload) {
+        if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
+        return ensureService().then(entryAuth).then(function (a) {
+            return (a.q ? Promise.resolve(a.q) : ticketOf(a)).then(function (cred) {
+                var q = 'what=iptvgroups' + (cred ? '&' + cred.replace(/^&/, '') : '');
+                return U.postJSON(PROXY + '/entry/open?' + q, JSON.stringify(payload || {}), 10000, 65536, a.h);
+            });
+        });
+    }
     function entryPoll(token) {
         return entryAuth().then(function (a) { return U.getJSON(PROXY + '/entry/poll?t=' + encodeURIComponent(token) + a.q, 5000, 4194304, null, a.h); })
             .then(function (r) { return (r && typeof r.text === 'string') ? r.text : null; });
@@ -401,6 +410,6 @@ var YTPlay = (function () {
         return MODE === 'tizenbrew' ? U.t('TizenBrew module') : MODE === 'wgt' ? U.t('Sideloaded app (.wgt)') : U.t('Browser (development)');
     }
 
-    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, m3uLoad: m3uLoad, m3uGroups: m3uGroups, m3uChannels: m3uChannels, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
+    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, m3uLoad: m3uLoad, m3uGroups: m3uGroups, m3uChannels: m3uChannels, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryOpenGroups: entryOpenGroups, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
         installLabel: installLabel, unavailableMessage: unavailableMessage, isRunning: isRunning, port: PORT };
 })();

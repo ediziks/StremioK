@@ -844,8 +844,117 @@ async function run() {
         }
     });
 
-    await runTest('escHtml (Phone QR group name HTML escaping)', () => {
-        assert.fail('not implemented');
+    await runTest('escHtml (Phone QR group name HTML escaping & POST form parsing)', async () => {
+        const svc = loadService();
+        svc.lanAddress = () => '192.168.1.50';
+        svc.hasTicket = (q) => /(?:^|&)ticket=ok(?:&|$)/.test(q || '');
+
+        function callEntryControl(method, reqPath, query, body, headers) {
+            return new Promise((resolve) => {
+                let status = 0;
+                let resBody = '';
+                const mockRes = {
+                    headers: {},
+                    setHeader: (k, v) => { mockRes.headers[k] = v; },
+                    writeHead: (s) => { status = s; },
+                    write: (chunk) => { resBody += chunk; },
+                    end: (chunk) => { if (chunk) { resBody += chunk; } resolve({ status, body: resBody }); },
+                    on: () => {}
+                };
+                svc.entryControl({ method, headers: headers || {} }, mockRes, reqPath, query, body);
+            });
+        }
+
+        function callEntryPage(method, reqUrl, postBody) {
+            return new Promise((resolve) => {
+                let status = 0;
+                let resBody = '';
+                const listeners = {};
+                const mockReq = {
+                    method,
+                    url: reqUrl,
+                    headers: {},
+                    on: (ev, fn) => { listeners[ev] = fn; }
+                };
+                const mockRes = {
+                    headers: {},
+                    setHeader: (k, v) => { mockRes.headers[k] = v; },
+                    writeHead: (s) => { status = s; },
+                    write: (chunk) => { resBody += chunk; },
+                    end: (chunk) => { if (chunk) { resBody += chunk; } resolve({ status, body: resBody, headers: mockRes.headers }); },
+                    on: () => {}
+                };
+                svc.entryPage(mockReq, mockRes);
+                if (method === 'POST') {
+                    setImmediate(() => {
+                        if (postBody && listeners.data) { listeners.data(Buffer.from(postBody, 'utf8')); }
+                        if (listeners.end) { listeners.end(); }
+                    });
+                }
+            });
+        }
+
+        // Direct escHtml check
+        assert.strictEqual(
+            svc.escHtml('<script>alert("x")</script> & \'y\''),
+            '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;y&#39;'
+        );
+
+        // Invalid JSON rejected
+        const badOpen = await callEntryControl('POST', '/entry/open', 'what=iptvgroups&ticket=ok', '{bad');
+        assert.strictEqual(badOpen.status, 400);
+
+        // Open iptvgroups entry via POST with ticket auth and weird group names
+        const openRes = await callEntryControl('POST', '/entry/open', 'what=iptvgroups&ticket=ok', JSON.stringify({
+            name: 'My "Test" & <List>',
+            groups: [
+                { id: '0', name: '<script>alert(1)</script>', count: 12, on: true },
+                { id: '1', name: 'Sports & "News" \'Live\'', count: 5, on: false },
+                { id: '2', name: 'Movies', count: 30, on: false }
+            ]
+        }));
+        assert.strictEqual(openRes.status, 200);
+        const opened = JSON.parse(openRes.body);
+        assert.ok(opened.token && opened.url.includes('/e/' + opened.token));
+
+        // GET phone page escapes weird names and includes UI controls
+        const pageGet = await callEntryPage('GET', '/e/' + opened.token);
+        assert.strictEqual(pageGet.status, 200);
+        assert.ok(!pageGet.body.includes('<script>alert(1)</script>'), 'raw <script> must not appear in HTML');
+        assert.ok(pageGet.body.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'escaped <script> must appear');
+        assert.ok(pageGet.body.includes('Sports &amp; &quot;News&quot; &#39;Live&#39;'), 'quotes and & must be escaped');
+        assert.ok(pageGet.body.includes('My &quot;Test&quot; &amp; &lt;List&gt;'), 'playlist name must be escaped');
+        assert.ok(pageGet.body.includes('Filter groups'));
+        assert.ok(pageGet.body.includes('Select all'));
+        assert.ok(pageGet.body.includes('Deselect all'));
+        assert.ok(pageGet.body.includes('Save to TV'));
+
+        // POST form selection resolves strictly against known group IDs (ignores unknown/proto)
+        const pagePost = await callEntryPage('POST', '/e/' + opened.token, 'id=0&id=2&id=999&id=__proto__');
+        assert.strictEqual(pagePost.status, 200);
+
+        const pollRes = await callEntryControl('GET', '/entry/poll', 't=' + opened.token, '', { 'x-stremiok': '1' });
+        assert.strictEqual(pollRes.status, 200);
+        assert.deepStrictEqual(JSON.parse(JSON.parse(pollRes.body).text), ['0', '2']);
+
+        // Empty POST (all deselected) resolves cleanly to []
+        const openRes2 = await callEntryControl('POST', '/entry/open', 'what=iptvgroups&ticket=ok', JSON.stringify({
+            name: 'Empty Test',
+            groups: [{ id: '0', name: 'News', count: 3, on: true }]
+        }));
+        assert.strictEqual(openRes2.status, 200);
+        const tok2 = JSON.parse(openRes2.body).token;
+        const emptyPost = await callEntryPage('POST', '/e/' + tok2, '');
+        assert.strictEqual(emptyPost.status, 200);
+        const pollRes2 = await callEntryControl('GET', '/entry/poll', 't=' + tok2, '', { 'x-stremiok': '1' });
+        assert.strictEqual(pollRes2.status, 200);
+        assert.deepStrictEqual(JSON.parse(JSON.parse(pollRes2.body).text), []);
+
+        // Direct helper check
+        assert.deepStrictEqual(
+            JSON.parse(JSON.stringify(svc.parseGroupSelectionBody('id=0&id=2&id=unknown', [{ id: '0' }, { id: '1' }, { id: '2' }]))),
+            ['0', '2']
+        );
     });
 
     console.log('\n===========================');

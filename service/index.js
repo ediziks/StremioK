@@ -2314,15 +2314,16 @@ function handle(req, res) {
         // The app's own guide POSTs: a browser sends an Origin with every POST (the app's page is
         // file://: "null"); let through with the token, or the guide ticket (for an app that can't
         // read the token: see /epg/ticket), which no web page has (/epg/ only).
-        if (who === 'origin' && req.method === 'POST' && /^\/(epg\/(load|get|clear)|drm\/license|entry\/give|plug\/fetch|bak\/write)$/.test(path) && /^(null|file:\/\/)$/.test(String(req.headers.origin || '')) && (hasToken(parts[1]) || hasTicket(parts[1]))) { who = null; }   // (and a DRM license's: see drmControl)
+        if (who === 'origin' && req.method === 'POST' && /^\/(epg\/(load|get|clear)|drm\/license|entry\/(give|open)|plug\/fetch|bak\/write)$/.test(path) && /^(null|file:\/\/)$/.test(String(req.headers.origin || '')) && (hasToken(parts[1]) || hasTicket(parts[1]))) { who = null; }   // (and a DRM license's: see drmControl)
         if (who) { send(res, 403, 'text/plain', 'not allowed (' + who + ')'); return; }
         if (req.method === 'OPTIONS') { if (isFs) { send(res, 403, 'text/plain', 'not allowed'); return; } res.writeHead(200); res.end(); return; }
         var epgPost = req.method === 'POST' && /^\/epg\/(load|get|clear)$/.test(path);   // (a guide's channels: in the body, see epgControl)
         var drmPost = req.method === 'POST' && path === '/drm/license';   // (a Widevine license request: see drmControl)
         var givePost = req.method === 'POST' && path === '/entry/give';   // (a configuration file for the phone: see entryControl)
+        var entryOpenPost = req.method === 'POST' && path === '/entry/open';   // (an IPTV group list for the phone: see entryControl)
         var plugPost = req.method === 'POST' && path === '/plug/fetch';   // (a Nuvio plugin's request: see plugControl)
         var bakPost = req.method === 'POST' && path === '/bak/write';   // (a backup or the logs for a USB drive: see bakControl)
-        if (req.method !== 'GET' && !epgPost && !drmPost && !givePost && !plugPost && !bakPost) { send(res, 405, 'text/plain', 'GET only'); return; }   // (before any work)
+        if (req.method !== 'GET' && !epgPost && !drmPost && !givePost && !entryOpenPost && !plugPost && !bakPost) { send(res, 405, 'text/plain', 'GET only'); return; }   // (before any work)
         if (req.url.length > (/^\/epg\//.test(path) ? 32768 : /^\/(fsdl\/add|live\/(open|master)|dav\/(list|walk|sub|mi|open)|smb\/[a-z]+|dlna\/[a-z]+)$/.test(path) ? 8192 : 2048)) { send(res, 414, 'text/plain', 'request too long'); return; }   // (a download's link can be long; a guide's channels, a bitset)
         // (StremioK gave up on it — a screen left, the player closed: what it still waits for is
         // dropped; 'close' before the response finished means that on every Node)
@@ -2340,6 +2341,14 @@ function handle(req, res) {
             req.setEncoding('utf8');
             req.on('data', function (c) { if (gover) { return; } gbody += c; if (gbody.length > GIVE_MAX) { gover = true; send(res, 413, 'text/plain', 'too much'); } });
             req.on('end', function () { if (!gover) { entryControl(req, res, path, parts[1], gbody); } });
+            return;
+        }
+        if (entryOpenPost) {
+            if (+(req.headers['content-length'] || 0) > GROUPS_MAX) { send(res, 413, 'text/plain', 'too much'); req.resume(); return; }
+            var ebody = '', eover = false;
+            req.setEncoding('utf8');
+            req.on('data', function (c) { if (eover) { return; } ebody += c; if (ebody.length > GROUPS_MAX) { eover = true; send(res, 413, 'text/plain', 'too much'); } });
+            req.on('end', function () { if (!eover) { entryControl(req, res, path, parts[1], ebody); } });
             return;
         }
         if (bakPost || path === '/bak/read') {
@@ -6990,12 +6999,12 @@ function epgControl(req, res, path, query) {
 var ENTRY_PORT = PORT + 10, ENTRY_MS = 5 * 60 * 1000, ENTRY_IDLE_MS = 30000, ENTRY_MAX = 8192;
 // A configuration file: pasted on the import's page (CONFIG_MAX, sent %-encoded: 3 times that), or
 // given by the TV to the export's page (GIVE_MAX, POSTed to /entry/give), shown to copy or download.
-var CONFIG_MAX = 1572864, GIVE_MAX = 1572864;   // (1.5 MB: a file with your history too; the page reads it as JSON, 2 MB at most)
+var CONFIG_MAX = 1572864, GIVE_MAX = 1572864, GROUPS_MAX = 512 * 1024;   // (1.5 MB: a file with your history too; the page reads it as JSON, 2 MB at most; 512 KB for IPTV groups)
 var ENTRY_OPEN_MAX = 2, ENTRY_OPENS = 12, ENTRY_CONNECTIONS = 8, ENTRY_VISIT_MS = 20000, ENTRY_QUIET_MS = 10000;
 var ENTRY_TITLES = { link: 'Play a link on StremioK', addon: 'Add an addon to StremioK', playlist: 'Add an IPTV playlist to StremioK', config: 'Import a configuration file into StremioK', give: 'Your StremioK configuration', givelog: 'Your StremioK logs',
     search: 'Search on StremioK', youtube: 'Add a YouTube catalog to StremioK', aiom: 'Your AIOManager address for StremioK', aiomkey: 'Your AIOManager API key for StremioK',
     server: 'Your streaming server’s address for StremioK', mac: 'Your Stalker portal’s MAC address for StremioK', webdav: 'Your network folder’s address for StremioK',
-    jellyfin: 'Your media server’s address for StremioK', plugins: 'Add a Nuvio plugin repository to StremioK' };
+    jellyfin: 'Your media server’s address for StremioK', plugins: 'Add a Nuvio plugin repository to StremioK', iptvgroups: 'Choose channel groups for StremioK' };
 var ENTRY_TEXT = { search: 'Words to search for', youtube: 'A channel, a playlist link, or words to search YouTube for', aiomkey: 'Your account API key', mac: 'Its MAC address (00:1A:79:…)' };   // (plain text, not a link)
 var _entries = Object.create(null), _entryServer = null, _entrySockets = [], _entryOpened = [];
 function lanAddress() {
@@ -7033,22 +7042,76 @@ function entryIdle(token) {
     clearTimeout(e.idle);
     e.idle = setTimeout(function () { entryDrop(token); }, ENTRY_IDLE_MS);
 }
+function escHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+function parseGroupSelectionBody(body, groups) {
+    var known = Object.create(null), seen = Object.create(null), out = [], i, g;
+    if (Array.isArray(groups)) {
+        for (i = 0; i < groups.length; i++) {
+            g = groups[i];
+            if (g && g.id != null && String(g.id) !== '') { known[String(g.id)] = true; }
+        }
+    }
+    var pairs = String(body || '').split('&');
+    for (i = 0; i < pairs.length; i++) {
+        if (!pairs[i]) { continue; }
+        var eq = pairs[i].indexOf('='), k = eq === -1 ? pairs[i] : pairs[i].slice(0, eq), v = eq === -1 ? '' : pairs[i].slice(eq + 1);
+        try { k = decodeURIComponent(k.replace(/\+/g, ' ')); } catch (e1) { continue; }
+        if (k !== 'id') { continue; }
+        try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e2) { continue; }
+        if (Object.prototype.hasOwnProperty.call(known, v) && !Object.prototype.hasOwnProperty.call(seen, v)) {
+            seen[v] = true;
+            out.push(v);
+        }
+    }
+    return out;
+}
 function entryControl(req, res, path, query, body) {
-    if (!entryAllowed(req, query) && !(path === '/entry/give' && hasTicket(query))) { send(res, 403, 'text/plain', 'not allowed'); return; }   // (the export's POST: the guide ticket too)
+    if (!entryAllowed(req, query) && !((path === '/entry/give' || (req.method === 'POST' && path === '/entry/open')) && hasTicket(query))) { send(res, 403, 'text/plain', 'not allowed'); return; }   // (the export's / groups' POST: the guide ticket too)
     var tm = /(?:^|&)t=([0-9a-f]{32})(?:&|$)/.exec(query || ''), token = tm ? tm[1] : '';
     if (path === '/entry/open' || path === '/entry/give') {
         if (path === '/entry/give' && !String(body || '').trim()) { send(res, 400, 'text/plain', 'nothing to give'); return; }
+        var wm = /(?:^|&)what=([a-z]{1,12})(?:&|$)/.exec(query || ''), what = path === '/entry/give' ? (/(?:^|&)kind=logs(?:&|$)/.test(query || '') ? 'givelog' : 'give') : wm && ENTRY_TITLES[wm[1]] && !/^give/.test(wm[1]) ? wm[1] : 'link';   // (an export: a configuration, or the logs)
+        var groupsData = null;
+        if (what === 'iptvgroups') {
+            if (req.method !== 'POST') { send(res, 405, 'text/plain', 'POST only'); return; }
+            var parsedGroups = null;
+            try { parsedGroups = JSON.parse(String(body || '')); } catch (ep) { parsedGroups = null; }
+            if (!parsedGroups || !Array.isArray(parsedGroups.groups)) { send(res, 400, 'text/plain', 'invalid groups'); return; }
+            var normGroups = [], gi, rawG, gid;
+            for (gi = 0; gi < parsedGroups.groups.length; gi++) {
+                rawG = parsedGroups.groups[gi];
+                if (!rawG || rawG.id == null) { continue; }
+                gid = String(rawG.id);
+                if (!gid) { continue; }
+                normGroups.push({
+                    id: gid,
+                    name: String(rawG.name != null ? rawG.name : gid),
+                    count: (typeof rawG.count === 'number' && isFinite(rawG.count) && rawG.count >= 0) ? Math.floor(rawG.count) : 0,
+                    on: !!(rawG.on !== undefined ? rawG.on : rawG.checked)
+                });
+            }
+            groupsData = {
+                name: String((parsedGroups.name != null ? parsedGroups.name : parsedGroups.title) || ''),
+                groups: normGroups
+            };
+        }
         var now = Date.now();
         _entryOpened = _entryOpened.filter(function (x) { return now - x < 60000; });
         if (_entryOpened.length >= ENTRY_OPENS) { send(res, 429, 'text/plain', 'too many, try again in a minute'); return; }
-        var wm = /(?:^|&)what=([a-z]{1,12})(?:&|$)/.exec(query || ''), what = path === '/entry/give' ? (/(?:^|&)kind=logs(?:&|$)/.test(query || '') ? 'givelog' : 'give') : wm && ENTRY_TITLES[wm[1]] && !/^give/.test(wm[1]) ? wm[1] : 'link';   // (an export: a configuration, or the logs)
         var ip = lanAddress();
         if (!ip) { send(res, 503, 'text/plain', 'no home network address'); return; }
         _entryOpened.push(now);
         var open = Object.keys(_entries).sort(function (a, b) { return _entries[a].at - _entries[b].at; });
         while (open.length >= ENTRY_OPEN_MAX) { entryDrop(open.shift(), true); }   // (the oldest goes)
         var t = crypto.randomBytes(16).toString('hex');
-        _entries[t] = { what: what, text: null, sent: false, at: now, timer: setTimeout(function () { entryDrop(t); }, ENTRY_MS), idle: null, give: /^give/.test(what) ? String(body) : null, seen: false };
+        _entries[t] = { what: what, text: null, sent: false, at: now, timer: setTimeout(function () { entryDrop(t); }, ENTRY_MS), idle: null, give: /^give/.test(what) ? String(body) : null, groupsData: groupsData, seen: false };
         entryIdle(t);
         var opened = function () { send(res, 200, 'application/json', JSON.stringify({ url: 'http://' + ip + ':' + ENTRY_PORT + '/e/' + t, token: t, expires: ENTRY_MS })); };
         if (_entryServer) { opened(); return; }
@@ -7107,7 +7170,29 @@ function entryPage(req, res) {
             return;
         }
         if (m[2]) { send(res, 404, 'text/plain', 'Not here'); return; }
-        var config = e.what === 'config', max = config ? CONFIG_MAX * 3 : ENTRY_MAX;   // (a pasted file: its lines kept, %-encoded as sent)
+        var iptvGroups = e.what === 'iptvgroups' && e.groupsData;
+        var config = e.what === 'config', max = iptvGroups ? GROUPS_MAX : config ? CONFIG_MAX * 3 : ENTRY_MAX;   // (a pasted file: its lines kept, %-encoded as sent)
+        if (req.method === 'GET' && iptvGroups) {
+            var gd = e.groupsData, rows = [], gi;
+            for (gi = 0; gi < gd.groups.length; gi++) {
+                var gg = gd.groups[gi];
+                rows.push('<label class="grp" data-name="' + escHtml(gg.name.toLowerCase()) + '"><input type="checkbox" name="id" value="' + escHtml(gg.id) + '"' + (gg.on ? ' checked' : '') + '><span class="gname">' + escHtml(gg.name) + '</span>' + (gg.count > 0 ? '<span class="gcnt">' + gg.count + '</span>' : '') + '</label>');
+            }
+            var gcss = '<style>.sub{margin:-8px 0 14px;font-weight:600;color:#c7cddb}.bar{display:flex;gap:8px;margin:10px 0 12px}.bar button{margin-top:0;flex:1;background:#232a3b;color:#e6e9ef;font-size:15px;padding:10px}' +
+                '.glist{max-height:56vh;overflow-y:auto;border:1px solid #2a3346;border-radius:10px;background:#161b26;padding:4px 0}.grp{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1f2636;cursor:pointer}' +
+                '.grp:last-child{border-bottom:0}.grp input{width:20px;height:20px;margin:0;flex:0 0 auto;accent-color:#818cf8}.gname{flex:1;font-size:16px;word-break:break-word}.gcnt{font-size:13px;color:#9aa3b5;background:#232a3b;padding:2px 8px;border-radius:999px}</style>';
+            var gscript = '<script>(function(){var q=document.getElementById("q"),items=document.querySelectorAll(".grp");' +
+                'function setAll(on){for(var i=0;i<items.length;i++){if(items[i].style.display!=="none"){items[i].querySelector("input").checked=on;}}}' +
+                'q.oninput=function(){var v=(q.value||"").toLowerCase().trim();for(var i=0;i<items.length;i++){var n=items[i].getAttribute("data-name")||"";items[i].style.display=(!v||n.indexOf(v)!==-1)?"flex":"none";}};' +
+                'document.getElementById("selAll").onclick=function(){setAll(true);};document.getElementById("selNone").onclick=function(){setAll(false);};})();</script>';
+            send(res, 200, 'text/html; charset=utf-8', entryHtml(title, gcss +
+                (gd.name ? '<p class="sub">' + escHtml(gd.name) + '</p>' : '') +
+                '<input id="q" type="search" autocomplete="off" placeholder="Filter groups...">' +
+                '<div class="bar"><button id="selAll" type="button">Select all</button><button id="selNone" type="button">Deselect all</button></div>' +
+                '<form method="post"><div class="glist">' + rows.join('') + '</div><button type="submit">Save to TV</button></form>' +
+                '<p>Leave all unchecked to read all groups. This page stops working once saved.</p>' + gscript));
+            return;
+        }
         if (req.method === 'GET' && config) {   // (its link, as before; or the file itself, chosen from the phone's files or pasted)
             send(res, 200, 'text/html; charset=utf-8', entryHtml(title, '<form method="post"><p>A link to the file</p><input name="link" type="url" autocomplete="off" placeholder="https://…">' +
                 '<p>Or the file itself (an export\'s stremiok.txt)</p><input id="pick" type="file" accept=".txt,.cfg,.conf,text/plain">' +
@@ -7134,6 +7219,13 @@ function entryPage(req, res) {
         req.on('end', function () {
             if (done) { return; }
             done = true;
+            if (iptvGroups) {
+                if (!_entries[m[1]] || e.sent) { send(res, 400, 'text/plain', 'Nothing sent'); return; }
+                e.text = JSON.stringify(parseGroupSelectionBody(body, e.groupsData.groups));
+                e.sent = true;
+                send(res, 200, 'text/html; charset=utf-8', entryHtml(title, '<p>Saved to your TV.</p>'));
+                return;
+            }
             var tm = /(?:^|&)text=([^&]*)/.exec(body), lm = config && /(?:^|&)link=([^&]*)/.exec(body), text = '';
             try { text = tm ? decodeURIComponent(tm[1].replace(/\+/g, ' ')) : ''; } catch (e3) { text = ''; }
             if (!text.trim() && lm) { try { text = decodeURIComponent(lm[1].replace(/\+/g, ' ')); } catch (e4) { text = ''; } }   // (a link to the file, as before)
