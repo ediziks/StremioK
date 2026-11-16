@@ -1222,6 +1222,113 @@ var ViewParts = {};
         _holdHint.className = (node && typeof node.__onlongpress === 'function') ? '' : 'hidden';
     });
 
+    // Live zapping directly from Home (3-pane IPTV browser or frosted Guide) without leaving
+    // #screen-home. Attaches self-contained CH+/CH- & Channel Drawer closures over opts.channels.
+    var _zapToken = 0;
+    function zapLiveChannel(ch, opts) {
+        if (!ch || !ch.id) { return; }
+        opts = opts || {};
+        var list = Array.isArray(opts.channels) && opts.channels.length ? opts.channels : [ch];
+        var idx = typeof opts.idx === 'number' ? opts.idx : list.indexOf(ch);
+        if (idx < 0) {
+            for (var i = 0; i < list.length; i++) { if (list[i] && list[i].id === ch.id) { idx = i; break; } }
+            if (idx < 0) { idx = 0; }
+        }
+        var browse = !!opts.browseOverlay;
+        var token = ++_zapToken;
+        if (!browse) { U.spinner(true, U.t('Tuning to {name}…', { name: ch.name })); }
+        Stremio.getStreams(ch.type || 'tv', ch.id).then(function (rawList) {
+            if (token !== _zapToken) { return; }
+            U.spinner(false);
+            var playable = (rawList || []).filter(Stremio.isPlayable);
+            if (!playable.length) {
+                U.toast(U.t('No playable source for {name}', { name: ch.name }));
+                return;
+            }
+            var chosen = (typeof opts.streamIndex === 'number' && playable[opts.streamIndex]) ? playable[opts.streamIndex] : playable[0];
+            function zapStep(dir) {
+                if (list.length < 2) { return; }
+                var n = list.length;
+                for (var step = 1; step <= n; step++) {
+                    var nextIdx = (idx + dir * step % n + n) % n;
+                    var candidate = list[nextIdx];
+                    if (candidate && !candidate.guideOnly) {
+                        zapLiveChannel(candidate, {
+                            browseOverlay: Player.isBrowseOverlay(),
+                            channels: list,
+                            idx: nextIdx,
+                            onZapped: opts.onZapped
+                        });
+                        return;
+                    }
+                }
+            }
+            function zapToIdFn(targetCh) {
+                if (!targetCh || !targetCh.id) { return; }
+                var found = -1;
+                for (var j = 0; j < list.length; j++) { if (list[j] && list[j].id === targetCh.id) { found = j; break; } }
+                zapLiveChannel(targetCh, {
+                    browseOverlay: Player.isBrowseOverlay(),
+                    channels: found !== -1 ? list : [targetCh],
+                    idx: found !== -1 ? found : 0,
+                    onZapped: opts.onZapped
+                });
+            }
+            function zapToNum(num) {
+                var want = (+num || 0) - 1;
+                if (want < 0 || want >= list.length || list[want].guideOnly) {
+                    U.toast(U.t('Channel {n} not found', { n: num }), 1500);
+                    return;
+                }
+                zapLiveChannel(list[want], { browseOverlay: Player.isBrowseOverlay(), channels: list, idx: want, onZapped: opts.onZapped });
+            }
+            function onBrowseRet(liveId) {
+                var focusNode = V.syncLiveBrowse ? V.syncLiveBrowse(liveId) : null;
+                if (focusNode) { Focus.setScope(scr('home'), focusNode); }
+            }
+            function onExited() {
+                var node = V.syncLiveBrowse ? V.syncLiveBrowse(ch.id) : null;
+                if (node) { Focus.setScope(scr('home'), node); }
+            }
+            function playChosen(url, ytPage) {
+                Player.play({
+                    url: url,
+                    variantUrl: ytPage ? YTPlay.resolverUrl(ytPage) : undefined,
+                    initialQualityHeight: ytPage ? 1080 : undefined,
+                    yt: ytPage || undefined,
+                    type: ch.type || 'tv',
+                    id: ch.id,
+                    name: ch.name,
+                    poster: ch.logo || '',
+                    isLive: true,
+                    fromHome: true,
+                    browseOverlay: browse,
+                    streams: playable,
+                    stream: chosen,
+                    formatInfo: Stremio.streamInfo ? Stremio.streamInfo(chosen) : null,
+                    _headers: U.sanitizeHeaders(chosen._headers) || undefined,
+                    zap: list.length > 1 ? zapStep : null,
+                    zapTo: list.length > 1 ? zapToNum : null,
+                    zapToId: zapToIdFn,
+                    onBrowseReturn: onBrowseRet
+                }, onExited);
+                if (opts.onZapped) { try { opts.onZapped(ch); } catch (e) {} }
+            }
+            if (chosen._yt && typeof YTPlay !== 'undefined') {
+                var ytPage = chosen.ytPage || chosen.url;
+                YTPlay.ensureService().then(function () {
+                    if (token !== _zapToken) { return; }
+                    playChosen(YTPlay.resolverUrl(ytPage, 1080), ytPage);
+                }, function () { U.toast(YTPlay.unavailableMessage('channel'), 4000); });
+                return;
+            }
+            playChosen(chosen.url, '');
+        }, function () {
+            U.spinner(false);
+            U.toast(U.t('Could not load sources'));
+        });
+    }
+
     // ----- published for the other parts (and js/views.js) -----
     V._current = _current;
     V.addonActions = addonActions;
@@ -1249,4 +1356,5 @@ var ViewParts = {};
     V.toggleLibrary = toggleLibrary;
     V.libraryOn = libraryOn;
     V.libraries = libraries;
+    V.zapLiveChannel = zapLiveChannel;
 })(ViewParts);

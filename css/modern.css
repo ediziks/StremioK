@@ -145,3 +145,17 @@ body.look-modern .season-bar .pill { background: rgba(255,255,255,0.12); color: 
 body.look-modern .season-bar .pill.focusable.focused { background: #fff; color: #000; }
 body.look-modern .stream.focusable.focused, body.look-modern .ep.focusable.focused { background: #fff; color: #000; border-color: #ffffff; box-shadow: none; }
 body.look-modern .stream, body.look-modern .ep { border-radius: 14px; background: rgba(22,27,38,0.72); }
+
+/* --- Live Video Behind Frosted Glass (Modern & Light-bg override over live video) --- */
+body.look-modern.live-behind #screen-home,
+body.look-modern.live-behind .home-bg { background: transparent !important; }
+body.look-modern.fx-full .glass-pane { background: rgba(15, 20, 31, 0.68); -webkit-backdrop-filter: blur(22px) saturate(1.25); backdrop-filter: blur(22px) saturate(1.25); border: 1px solid rgba(255, 255, 255, 0.14); }
+body.look-modern.fx-full.live-behind .guide,
+body.look-modern.fx-full.live-behind .home-info.on:not(.hero) { -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2); }
+body.look-modern.bg-light.live-behind .glass-pane,
+body.look-modern.bg-light.live-behind .guide,
+body.look-modern.bg-light.live-behind .home-info.on:not(.hero) { background: rgba(13, 17, 26, 0.82); color: #f9fafb; border-color: rgba(255,255,255,0.16); }
+body.look-modern.bg-light.live-behind .home-header .tab-pill { color: rgba(255,255,255,0.82); }
+body.look-modern.bg-light.live-behind .home-header .tab-pill.active { background: rgba(255,255,255,0.2); color: #fff; }
+body.look-modern.bg-light.live-behind .tab-pill.focusable.focused,
+body.look-modern.bg-light.live-behind .header .hchip.focusable.focused { background: #ffffff; color: #0e1117; border-color: #ffffff; }

@@ -357,6 +357,7 @@ var PlayerParts = {};
     function isLivePlaying() { return !!(S.active && S.isLive); }
     function isBrowseOverlay() { return !!(S.active && S.isLive && S.browseOverlay); }
     function currentLiveId() { return (S.active && S.isLive && S.ctx && S.ctx.id) ? S.ctx.id : ''; }
+    function zapLive(dir) { if (S.active && S.isLive && S.ctx && S.ctx.zap) { S.ctx.zap(dir); return true; } return false; }
     function liveMeta() {
         if (!S.active || !S.isLive || !S.ctx) { return null; }
         var a = S.actual || {};
@@ -1988,7 +1989,7 @@ var PlayerParts = {};
     // ----- for the other parts (and js/player.js) -----
     P.init = init; P.isActive = isActive; P.showOSD = showOSD; P.hideOSD = hideOSD; P.renderOSD = renderOSD; P.play = play; P.playLinked = playLinked; P.replaceSource = replaceSource;
     P.isLivePlaying = isLivePlaying; P.isBrowseOverlay = isBrowseOverlay; P.setBrowseOverlay = setBrowseOverlay; P.currentLiveId = currentLiveId;
-    P.liveMeta = liveMeta; P.onLiveMetaChange = onLiveMetaChange; P.parseFps = parseFps;
+    P.liveMeta = liveMeta; P.onLiveMetaChange = onLiveMetaChange; P.parseFps = parseFps; P.zapLive = zapLive;
     P.updateHint = updateHint; P.startAV = startAV; P.startHTML5 = startHTML5;
     P.handleCredits = handleCredits; P.isPaused = isPaused; P.play_ = play_; P.pause_ = pause_;
     P.sponsorHighlight = sponsorHighlight;

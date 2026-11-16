@@ -10,9 +10,13 @@ var App = (function () {
 
     function showScreen(name) {
         if (name !== _current) { U.crumb(name); }
+        if (name !== 'home' && typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) {
+            Player.exit();
+        }
         ['home', 'discover', 'detail', 'search', 'settings', 'addaddon'].forEach(function (n) {
             var el = screenEl(n);
-            if (el) { el.className = 'screen' + (n === name ? '' : ' hidden'); }
+            if (el && el.classList) { el.classList[n === name ? 'remove' : 'add']('hidden'); }
+            else if (el) { el.className = 'screen' + (n === name ? '' : ' hidden'); }
         });
         _current = name;
     }
@@ -43,14 +47,16 @@ var App = (function () {
     // to): what it was still downloading is stopped.
     function abandon(name) { if (Views.leaveScreen) { Views.leaveScreen(name); } }
 
-    function goHome(tab) {
+    function goHome(tab, liveId) {
         U.crumb('home: ' + tab);
         Views.setHomeTab(tab);
         ['detail', 'discover', 'search'].forEach(abandon);   // (the stack cleared: none of them is coming back)
         _stack = [];           // Home is the root
         showScreen('home');
         Views.renderHome();
-        focusOn('home');
+        var synced = liveId && Views.syncLiveBrowse ? Views.syncLiveBrowse(liveId) : null;
+        if (synced) { Focus.setScope(screenEl('home'), synced); }
+        else { focusOn('home'); }
     }
 
     // Live TV: skip the info page — load sources and (if a single one) play immediately.
@@ -77,12 +83,13 @@ var App = (function () {
     // cells from when it was played may be gone, or show hours long past).
     function returnFromLive(focusNode, liveId) {
         var f = _stack.pop();
-        if (!f) { goHome(); return; }
+        if (!f) { goHome(undefined, liveId); return; }
         if (f.screen !== _current) { abandon(_current); }
         showScreen(f.screen);
-        var guide = liveId && f.screen === 'home' && Views.guideBackOn ? Views.guideBackOn(liveId) : null;
+        var synced = liveId && f.screen === 'home' && Views.syncLiveBrowse ? Views.syncLiveBrowse(liveId) :
+            (liveId && f.screen === 'home' && Views.guideBackOn ? Views.guideBackOn(liveId) : null);
         var alt = focusNode && document.documentElement.contains(focusNode) ? focusNode : null;
-        Focus.setScope(screenEl(f.screen), guide || alt || f.focus);
+        Focus.setScope(screenEl(f.screen), synced || alt || f.focus);
     }
 
     // After a screen is drawn, focus must be on it. A drawing path that doesn't put it there
@@ -137,12 +144,14 @@ var App = (function () {
     }
 
     function back() {
-        if (Player.isActive()) { Player.exit(); return; }
+        if (Player.isActive() && !(Player.isBrowseOverlay && Player.isBrowseOverlay())) { Player.exit(); return; }
         if (Views.isModalOpen()) { Views.closeModal(); return; }
         if (_current === 'detail' && Views.backInDetail()) { return; }
         if (_current === 'settings' && Views.backInSettings()) { return; }
         if (_current === 'home' && Views.backInLocal && Views.backInLocal()) { return; }   // (the Local tab: up a folder)
+        if (_current === 'home' && Views.backInIptv && Views.backInIptv()) { return; }     // (IPTV 3-pane: back toward Categories / Top menu)
         if (toTopMenu()) { return; }
+        if (Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); return; }  // Top Menu BACK stops live stream cleanly before exit prompt
         var f = _stack.pop();
         if (!f) { askExit(); return; }
         if (f.screen !== _current) { abandon(_current); }
@@ -184,7 +193,14 @@ var App = (function () {
             _lastBackAt = nowb;
         }
         if (action === 'GUIDE') { guideKey(); return true; }
-        if (Player.isActive()) { return Player.handleKey(action); }   // (a held OK too: the player's Cast & more has a menu behind it)
+        if (Player.isActive()) {
+            if (!(Player.isBrowseOverlay && Player.isBrowseOverlay())) { return Player.handleKey(action); }
+            if (action === 'STOP') { Player.exit(); return true; }
+            if (action === 'PLAY') { Player.setBrowseOverlay(false); return true; }
+            if (action === 'PAUSE' || action === 'PLAYPAUSE') { if (Player.togglePlay) { Player.togglePlay(); } return true; }
+            if (action === 'CHUP' || action === 'CHDOWN') { if (Player.zap) { Player.zap(action === 'CHUP' ? 1 : -1); } return true; }
+            if (action === 'BLUE') { if (Player.toggleStreamInfo) { Player.toggleStreamInfo(); } return true; }
+        }
         if (Views.moveKey && Views.moveKey(action)) { return true; }   // (a Continue Watching card being moved)
         switch (action) {
             case 'LEFT': Focus.move('LEFT'); return true;
@@ -218,18 +234,31 @@ var App = (function () {
                 return true;
             }
             default:
-                if (/^NUM\d$/.test(action)) { numberKey(+action.slice(3)); }
+                if (/^NUM\d$/.test(action)) {
+                    var n = +action.slice(3);
+                    if (_current === 'home' && Views.iptvNumberKey && Views.iptvNumberKey(n)) { return true; }
+                    numberKey(n);
+                }
                 return true;
         }
     }
 
     // The remote's GUIDE key: the Guide tab (once a TV guide is read: it's in the top menu), the
-    // player closed first. Not over a popup, nor while an addon's link is typed.
+    // player closed first (or frosted overlay when liveBrowseMode is enabled).
     function guideKey() {
         var on = (Views.menuItems ? Views.menuItems() : []).some(function (m) { return m.key === 'guide'; });
         if (!on) { U.toast(U.t('No TV guide yet (Settings › Content › IPTV › Guide link)'), 3000); return; }
+        if (Views.isModalOpen() || _current === 'addaddon') { return; }
+        if (Player.isLivePlaying && Player.isLivePlaying() && Stremio.getPrefs().liveBrowseMode) {
+            if (Player.isBrowseOverlay && Player.isBrowseOverlay() && Views.currentHomeTab && Views.currentHomeTab() === 'guide') {
+                Player.setBrowseOverlay(false);
+                return;
+            }
+            Player.setBrowseOverlay(true);
+            goHome('guide', Player.currentLiveId ? Player.currentLiveId() : '');
+            return;
+        }
         if (Player.isActive()) { Player.exit(); }
-        else if (Views.isModalOpen() || _current === 'addaddon') { return; }
         goHome('guide');
     }
 

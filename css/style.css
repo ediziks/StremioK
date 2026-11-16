@@ -605,3 +605,19 @@ html, body {
 .home-info-pic.hidden { display: none; }
 #osd-clock { position: fixed; top: 40px; right: 60px; font-size: 34px; font-weight: bold; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,0.9); }   /* (the time of day, top right, while the bar shows) */
 #osd-clock:empty { display: none; }
+
+/* --- Live Video Behind Frosted Glass (body.live-behind + .glass-pane) --- */
+body.live-behind,
+body.live-behind #app,
+body.live-behind #screen-home { background: transparent !important; }
+body.live-behind .home-bg { background: radial-gradient(ellipse at 65% 45%, rgba(8,12,20,0.18) 0%, rgba(8,12,20,0.62) 100%) !important; }
+body.live-behind .home-bg .hb { display: none; }
+.glass-pane { background: rgba(13, 17, 26, 0.90); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; }
+body.live-behind .header .hchip { background: rgba(18, 24, 36, 0.80); color: #e5e7eb; }
+body.live-behind .home-info.on { background: rgba(12, 16, 25, 0.78); border-color: #818cf8; color: #fff; }
+body.live-behind .guide { background: rgba(10, 14, 22, 0.56); border-radius: 14px; padding-top: 12px; }
+body.live-behind .guide-ch { background: rgba(16, 22, 34, 0.76); color: #f3f4f6; }
+body.live-behind .guide-track { background: rgba(10, 14, 22, 0.42); }
+body.live-behind .guide-prog { background: rgba(20, 26, 40, 0.72); border-color: rgba(10, 14, 22, 0.55); color: #d1d5db; }
+body.live-behind .guide-prog.now { background: rgba(34, 46, 70, 0.82); color: #ffffff; }
+.guide-ch.guide-ch-live { border-left: 4px solid #34d399; color: #ecfdf5; }
