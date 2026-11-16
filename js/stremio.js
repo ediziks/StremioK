@@ -186,7 +186,22 @@ var Stremio = (function () {
             menuOrder: wordList(p.menuOrder, 20, 20),     // ...and the menu's order (see ViewParts.menuOrder)
             startTab: /^[a-z]{1,20}$/.test(p.startTab || '') ? p.startTab : 'continue',   // Settings > Home > Start on: the Home tab a launch opens on
             hideWords: wordList(p.hideWords, 30, 40),     // Settings > Source ranking: sources with these words at the bottom
-            watchRegion: /^[A-Z]{2}$/.test(p.watchRegion || '') ? p.watchRegion : '' };   // Settings > Integrations ('' = automatic)
+            watchRegion: /^[A-Z]{2}$/.test(p.watchRegion || '') ? p.watchRegion : '',   // Settings > Integrations ('' = automatic)
+            iptvTidy: p.iptvTidy !== false,               // Settings > Content > IPTV: smart playlist tidier & cleaner names
+            iptvHideAdult: p.iptvHideAdult !== false,     // ...hide XXX / 18+ channels & groups when tidying
+            iptvCollapseVariants: p.iptvCollapseVariants !== false,   // ...merge 4K / FHD / HEVC / HD / Backup duplicates
+            iptvCountries: countryCsv(p.iptvCountries),   // ...preferred country codes floated to top ('' = off)
+            liveBrowseMode: p.liveBrowseMode !== false,   // ...keep live TV playing behind frosted UI on OK / BACK
+            oledShift: p.oledShift === 'on' || p.oledShift === 'off' ? p.oledShift : 'auto' };   // Settings > Appearance: ±2px orbit + pause dim
+    }
+    function countryCsv(val) {
+        if (val === undefined || val === null) { return 'TR,UK,NL'; }
+        var out = [], seen = {};
+        String(val).split(/[\s,;]+/).forEach(function (tok) {
+            var code = tok.trim().toUpperCase();
+            if (/^[A-Z]{2}$/.test(code) && !seen[code] && out.length < 8) { seen[code] = 1; out.push(code); }
+        });
+        return out.join(',');
     }
     // A kind's size limits, in GB (0: none): { min, max, perHour }.
     function sizeLimits(all, kind) {
@@ -2347,6 +2362,8 @@ var Stremio = (function () {
         codec = /hevc|h265|hvc|hev/.test(codec) ? 'hevc' : /av01|av1/.test(codec) ? 'av1' : /avc|h264/.test(codec) ? 'h264' : info.codec;
         if (res) { out.push(PROFILE_RES[res] || res + 'p'); }
         if (codec) { out.push(PROFILE_CODEC[codec] || codec.toUpperCase()); }
+        var fps = +actual.fps || 0;
+        if (fps > 0) { out.push((Math.round(fps * 100) / 100) + 'fps'); }
         if (info.bits10 || info.hdr) { out.push('10-bit'); }
         if (info.hdr) { out.push({ hdr: 'HDR10', hdr10p: 'HDR10+', dv: 'Dolby Vision', 'dv-only': 'Dolby Vision' }[info.hdr]); }
         var a = ('' + (actual.audio || '')).toLowerCase(), aud = (info.audio || []).slice();
@@ -2355,6 +2372,8 @@ var Stremio = (function () {
         aud.slice(0, 2).forEach(function (x) { out.push(SHORT_AUDIO[x] || x); });
         var ch = +actual.channels || 0;
         if (ch) { out.push(ch === 6 ? '5.1' : ch === 8 ? '7.1' : ch === 2 ? U.t('Stereo') : ch === 1 ? U.t('Mono') : ch + 'ch'); }
+        var bps = +actual.bitrate || 0;
+        if (bps >= 100000) { out.push((Math.round(bps / 100000) / 10).toFixed(1) + ' Mbps'); }
         if (info.container && info.container !== 'hls') { out.push(info.container.toUpperCase()); }
         return out.join(' · ');
     }

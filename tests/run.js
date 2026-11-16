@@ -676,6 +676,7 @@ async function run() {
             );
             let curFmt = 'ts';
             const iptvCtx = loadBrowserScript('js/iptv.js', {
+                Date: Date,
                 YTPlay: {
                     installMode: () => 'service',
                     xtliveList: (base, user, pass, fmt) => {
@@ -1162,6 +1163,43 @@ async function run() {
         assert.strictEqual(chJson.channels.length, 1);
         assert.strictEqual(chJson.channels[0].name, 'Ch 1');
         assert.strictEqual(fetchCount, 1);
+    });
+
+    await runTest('prefs & formatTags (Tier 1 Live TV prefs, FPS & Mbps bitrate)', async () => {
+        const ctx = loadBrowserScript('js/stremio.js');
+        const defs = ctx.Stremio.getPrefs();
+        assert.strictEqual(defs.iptvTidy, true);
+        assert.strictEqual(defs.iptvHideAdult, true);
+        assert.strictEqual(defs.iptvCollapseVariants, true);
+        assert.strictEqual(defs.iptvCountries, 'TR,UK,NL');
+        assert.strictEqual(defs.liveBrowseMode, true);
+        assert.strictEqual(defs.oledShift, 'auto');
+
+        ctx.Stremio.setPref('oledShift', 'bogus');
+        ctx.Stremio.setPref('iptvCountries', ' tr, de , invalid, us, uk, fr, es, it, ar, jp ');
+        const updated = ctx.Stremio.getPrefs();
+        assert.strictEqual(updated.oledShift, 'auto');
+        assert.strictEqual(updated.iptvCountries, 'TR,DE,US,UK,FR,ES,IT,AR');
+
+        ctx.Stremio.setPref('iptvCountries', '');
+        assert.strictEqual(ctx.Stremio.getPrefs().iptvCountries, '');
+
+        const rich = ctx.Stremio.formatTags(
+            { res: 1080, codec: 'h264', audio: ['aac'], container: 'hls' },
+            { height: 2160, codec: 'hevc', fps: 50, bitrate: 14200000, audio: 'eac3', channels: 6 }
+        );
+        assert.ok(rich.indexOf('4K') !== -1, 'Expected 4K in: ' + rich);
+        assert.ok(rich.indexOf('HEVC') !== -1, 'Expected HEVC in: ' + rich);
+        assert.ok(rich.indexOf('50fps') !== -1, 'Expected 50fps in: ' + rich);
+        assert.ok(rich.indexOf('DD+') !== -1, 'Expected DD+ in: ' + rich);
+        assert.ok(rich.indexOf('5.1') !== -1, 'Expected 5.1 in: ' + rich);
+        assert.ok(rich.indexOf('14.2 Mbps') !== -1, 'Expected 14.2 Mbps in: ' + rich);
+
+        const plain = ctx.Stremio.formatTags(
+            { res: 1080, codec: 'h264', audio: ['aac'], container: 'mkv' },
+            { height: 1080, codec: 'h264', fps: 0, bitrate: 0 }
+        );
+        assert.strictEqual(plain, '1080p · H.264 · AAC · MKV');
     });
 
     console.log('\n===========================');
