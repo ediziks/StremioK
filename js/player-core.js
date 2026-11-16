@@ -502,7 +502,7 @@ var PlayerParts = {};
     // is what's learned from it (s.stream, through ctx.learnFor); the title, its episodes and
     // whether it's private stay.
     var SOURCE_FIELDS = ['url', 'variantUrl', 'initialQualityHeight', 'yt', 'ytLang', '_headers', 'localSubs', 'localFile', 'subExtra', 'sourceSubs', 'formatInfo', 'onStarted', 'onFailed', 'stream',
-        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_liveChecked'];
+        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_liveChecked', '_avDefaultAudioTried', '_avNoAudioTried', '_avNoVideoTried'];
     // keep: a source that didn't start gives way to the next (nextSourceOnFail): the same place to
     // resume, and Play from the start as it was.
     function replaceSource(s, keep) {
@@ -1539,9 +1539,9 @@ var PlayerParts = {};
     // page picks it: ctx.nextSource), at the same place, NEXT_TRIES more at most. Not for live
     // channels, YouTube or a USB file.
     var NEXT_TRIES = 3, AV_START_MS = 45000, _openedAt = 0;
-    function nextSourceOnFail(notice) {
+    function nextSourceOnFail(notice, force) {
         var c = S.ctx;
-        if (!c || !S.active || S.playing || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
+        if (!c || !S.active || (!force && S.playing) || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
         if (!S.isLive && (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail)) { return false; }
         var tried = (c._tried || []).concat([Stremio.sourceId(c.stream)]);
         if (tried.length > NEXT_TRIES) { return false; }
@@ -1864,7 +1864,49 @@ var PlayerParts = {};
     // that never finishes, reloads the stream in place: VOD at the same position, live at
     // the edge. A source that stalls STALL_MAX times within STALL_WINDOW_MS is given up on
     // (VOD lands back on its source list). Checked from the 5 s ticker.
-    var STALL_SECS = 12, BUFFER_STALL_SECS = 30, STALL_MAX = 3, STALL_WINDOW_MS = 5 * 60 * 1000;
+    var STALL_SECS = 12, BUFFER_STALL_SECS = 30, STALL_MAX = 3, STALL_WINDOW_MS = 5 * 60 * 1000, LIVE_AV_GRACE_MS = 5000;
+    function streamTracksSummary() {
+        var hasVideo = false, hasAudio = false;
+        try {
+            (avplay.getCurrentStreamInfo() || []).forEach(function (x) {
+                var t = ('' + x.type).toUpperCase(), e = {};
+                try { e = typeof x.extra_info === 'string' ? JSON.parse(x.extra_info) : (x.extra_info || {}); } catch (er) {}
+                if (t === 'VIDEO' && (+(e.Width || e.width) > 0 || !!(e.fourCC || e.codec))) { hasVideo = true; }
+                if (t === 'AUDIO') { hasAudio = true; }
+            });
+        } catch (er2) {}
+        return { hasVideo: hasVideo, hasAudio: hasAudio };
+    }
+    function checkLiveAV(now) {
+        var ctx = S.ctx;
+        if (!S.active || !S.playStarted || !S.playing || !ctx || !S.isLive || !useAV || ctx.trailer || ctx.yt || ctx.type === 'radio' || isPaused() || S.buffering) { return; }
+        now = now || Date.now();
+        if (now - Math.max(_openedAt || 0, S.settleFrom || 0) < LIVE_AV_GRACE_MS) { return; }
+        var sum = streamTracksSummary();
+        if (!sum.hasVideo && !sum.hasAudio) { return; }
+        if (sum.hasVideo && !sum.hasAudio) {
+            if (!ctx._avDefaultAudioTried) {
+                ctx._avDefaultAudioTried = true;
+                if (P.fallbackDefaultAudio && P.fallbackDefaultAudio()) { S.settleFrom = now; return; }
+            }
+            if (!ctx._avNoAudioTried) {
+                ctx._avNoAudioTried = true;
+                U.log('player', 'Live channel has video without audio (' + where(ctx.url) + ')');
+                if (nextSourceOnFail({ kind: 'no-audio', text: U.t('No audio on this source') }, true)) { return; }
+                if (!ctx._liveFixed && !ctx._relay && liveFixable(ctx)) {
+                    ctx._liveFixed = true;
+                    YTPlay.liveOpen(ctx.url, ctx._headers, true, { fix: true }).then(function (r) {
+                        if (S.ctx === ctx && S.active && relayed(ctx, r, null, true)) { reopen(U.t('No audio: repacking via StremioK…')); }
+                    }, function () {});
+                }
+            }
+        } else if (!sum.hasVideo && sum.hasAudio && !ctx._avNoVideoTried) {
+            ctx._avNoVideoTried = true;
+            U.log('player', 'Live channel has audio without video (' + where(ctx.url) + ')');
+            nextSourceOnFail({ kind: 'no-video', text: U.t('No video on this source') }, true);
+        }
+    }
+    P.checkLiveAV = checkLiveAV;
     function checkStall() {
         if (!S.active || !S.playStarted || scrubbing()) { _stall.since = 0; _stall.bufSince = 0; return; }
         var now = Date.now();
@@ -1874,7 +1916,11 @@ var PlayerParts = {};
             return;
         }
         _stall.bufSince = 0;
-        if (isPaused() || S.cur !== _stall.t) { _stall.t = S.cur; _stall.since = now; return; }
+        if (isPaused() || S.cur !== _stall.t) {
+            _stall.t = S.cur; _stall.since = now;
+            checkLiveAV(now);
+            return;
+        }
         if (_stall.since && now - _stall.since > STALL_SECS * 1000) { recoverStall(U.t('Playback stalled')); }
     }
     function recoverStall(why) {
@@ -1925,7 +1971,7 @@ var PlayerParts = {};
         var msg = n > 1 ? U.t('{why} — reconnecting (try {n})…', { why: why, n: n }) : U.t('{why} — reconnecting…', { why: why });
         U.log('player', 'Live channel: ' + why + ', reconnecting (try ' + n + (wait ? ', in ' + (wait / 1000) + ' s' : '') + ')');
         if (!wait) { reopen(msg); return; }
-        U.spinner(true, msg);
+        if (S.browseOverlay) { emitLiveMeta(); } else { U.spinner(true, msg); }
         function due() {
             _reco.timer = null;
             if (!S.active || S.ctx !== ctx) { return; }
@@ -1940,8 +1986,8 @@ var PlayerParts = {};
         S.ctx.resumeSec = S.isLive ? 0 : S.cur;
         if (S.ctx.yt && typeof YTPlay !== 'undefined') { S.ctx.url = YTPlay.resolverUrl(S.ctx.yt, qualityHeight(), true, S.ctx.ytLang); }
         clearStartNote();
-        U.spinner(true, message);
-        if (useAV) { startAV(S.ctx.url); } else { startHTML5(S.ctx.url); }
+        if (S.browseOverlay) { emitLiveMeta(); } else { U.spinner(true, message); }
+        if (useAV) { startAV(S.ctx.url, S.isLive ? 120 : 0); } else { startHTML5(S.ctx.url); }
     }
 
     function exit() {

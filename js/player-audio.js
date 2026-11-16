@@ -144,7 +144,8 @@
         // (an episode: its own choice, else the one made last in the series — by its language)
         var pos = -1, mem = recallAudio(S.ctx && S.ctx.id) || (seriesOf(S.ctx) && recallAudio(seriesOf(S.ctx)));
         if (mem) { pos = rememberedAudioPos(tracks, mem); }
-        if (pos < 0) {
+        // Live streams cannot seek to re-sync audio; keep track 0 unless the user remembered one for this channel.
+        if (pos < 0 && !S.isLive) {
             // preferred language, then the second choice ("Default" = first track, no preference)
             var cfg = getAudioCfg();
             var prefs = cfg.lang === 'default' ? [] : [cfg.lang];
@@ -364,7 +365,15 @@
         return { title: U.t('Audio track'), items: items, idx: idx };
     }
 
+    function fallbackDefaultAudio() {
+        var tracks = getAudioTracks();
+        if (tracks.length < 2 || _audioIdx === tracks[0].index) { return false; }
+        selectAudio(tracks[0].index, U.t('Restoring default audio…'), true);
+        return true;
+    }
+
     // ----- for the other parts (and js/player.js) -----
     P.resetAudio = resetAudio; P.audioOnStart = audioOnStart; P.audioOnTick = audioOnTick; P.audioOnReady = audioOnReady;
     P.getAudioTracks = getAudioTracks; P.applyPreferredAudio = applyPreferredAudio; P.audioMenu = audioMenu;
+    P.fallbackDefaultAudio = fallbackDefaultAudio;
 })(PlayerParts);

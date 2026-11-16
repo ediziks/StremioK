@@ -1951,6 +1951,167 @@ async function run() {
         ctx.Player.exit();
     });
 
+    await runTest('Live AV stream health recovery (no-audio / no-video fallback & repack, keep default live track)', async () => {
+        const calls = [];
+        let activeListener = null;
+        let currentStreamInfo = [];
+        let totalTrackInfo = [];
+        let liveOpenCalls = 0;
+
+        const mockAvplay = {
+            open: (u) => { calls.push('open:' + u); },
+            stop: () => { calls.push('stop'); },
+            close: () => { calls.push('close'); },
+            setListener: (l) => { activeListener = l; },
+            prepareAsync: (ok) => { ok(); },
+            play: () => {},
+            getState: () => 'PLAYING',
+            getDuration: () => 0,
+            getCurrentTime: () => 0,
+            getTotalTrackInfo: () => totalTrackInfo,
+            getCurrentStreamInfo: () => currentStreamInfo,
+            setSelectTrack: (type, idx) => { calls.push('select:' + type + ':' + idx); },
+            setDisplayRect: () => {},
+            setDisplayMethod: () => {},
+            setBufferingParam: () => {},
+            setStreamingProperty: () => {},
+            setSilentSubtitle: () => {},
+            seekTo: () => {},
+            suspend: () => {},
+            restore: () => {}
+        };
+
+        const makeEl = (id, tag) => {
+            const clsSet = new Set();
+            return {
+                id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
+                children: [], parentNode: null,
+                setAttribute: () => {}, getAttribute: () => null, contains: () => false,
+                classList: {
+                    add: (c) => { clsSet.add(c); },
+                    remove: (c) => { clsSet.delete(c); },
+                    contains: (c) => clsSet.has(c)
+                },
+                appendChild: (c) => c, removeChild: (c) => c,
+                addEventListener: () => {}, querySelector: () => null, querySelectorAll: () => []
+            };
+        };
+        const byIdMap = {};
+        ['app', 'player-osd', 'osd-title', 'osd-subtitle', 'osd-tags', 'osd-logo', 'osd-badges',
+         'osd-time', 'osd-progress', 'osd-fill', 'osd-thumb', 'osd-scrub', 'osd-scrub-time',
+         'osd-scrub-pic', 'osd-hint', 'subs', 'subs2', 'sub-menu', 'player-bar', 'stream-info',
+         'skip-prompt', 'channel-drawer'].forEach((id) => { byIdMap[id] = makeEl(id, 'DIV'); });
+        const bodyEl = makeEl('body', 'BODY');
+        const baseCtx = loadBrowserScript('js/iptv.js');
+        const extraU = Object.assign({}, baseCtx.U, {
+            byId: (id) => byIdMap[id] || makeEl(id),
+            el: (tag, cls, txt) => makeEl('', (tag || 'div').toUpperCase()),
+            clear: (n) => { n.children = []; n.textContent = ''; },
+            getText: () => Promise.resolve(''),
+            getJSON: () => Promise.resolve(null),
+            listOf: (x) => Array.isArray(x) ? x : [],
+            fmtTime: () => '0:00',
+            whenVisible: () => {},
+            cancelToken: () => ({ cancelled: false, cancel: function () { this.cancelled = true; } }),
+            crumb: () => {}, zoom: () => 1, fromUTF8: (b) => b, toUTF8: (s) => s, loadScript: () => Promise.resolve(),
+            deferImage: () => {}, cardImage: () => {}, qrCanvas: () => {},
+            toast: () => {}, spinner: () => {}, startOledOrbit: () => {}, stopOledOrbit: () => {}
+        });
+
+        const ctx = loadBrowserScript([
+            'js/stremio.js',
+            'js/player-core.js',
+            'js/player-store.js',
+            'js/player-lang.js',
+            'js/player-quality.js',
+            'js/player-subs.js',
+            'js/player-audio.js',
+            'js/player-controls.js',
+            'js/player.js'
+        ], {
+            Date: Date,
+            webapis: { avplay: mockAvplay },
+            YTPlay: {
+                installMode: () => 'service',
+                liveOpen: (url, h, active, opts) => {
+                    liveOpenCalls++;
+                    return Promise.resolve({ ok: true, url: 'http://localhost:8098/live/fixed.m3u8', fix: !!(opts && opts.fix) });
+                }
+            },
+            U: extraU,
+            document: {
+                body: bodyEl, documentElement: bodyEl,
+                getElementById: (id) => byIdMap[id] || null,
+                createElement: extraU.el, querySelector: () => null, querySelectorAll: () => [],
+                addEventListener: () => {}, removeEventListener: () => {}
+            }
+        });
+        ctx.U.store.set('stremiok.audio', { lang: 'eng', lang2: 'tur', switch: 'safe', wait: 6 });
+        ctx.Player.init();
+
+        // 1. Live TV with multi-audio must NOT blindly switch track away from track 0 on global pref
+        totalTrackInfo = [
+            { type: 'AUDIO', index: 1, extra_info: JSON.stringify({ language: 'tur' }) },
+            { type: 'AUDIO', index: 2, extra_info: JSON.stringify({ language: 'eng' }) }
+        ];
+        currentStreamInfo = [
+            { type: 'VIDEO', index: 0, extra_info: JSON.stringify({ Width: 1920, Height: 1080, fourCC: 'h264' }) },
+            { type: 'AUDIO', index: 1, extra_info: JSON.stringify({ fourCC: 'aac', channels: 2 }) }
+        ];
+        ctx.Player.play({
+            url: 'http://xt.example.com/live/u/p/301.ts',
+            stream: { url: 'http://xt.example.com/live/u/p/301.ts' },
+            type: 'tv', id: 'iptv:ch301', name: 'Live Multi', isLive: true,
+            nextSource: (tried) => tried.length === 1 ? {
+                source: { url: 'http://xt.example.com/live/u/p/301.m3u8', stream: { url: 'http://xt.example.com/live/u/p/301.m3u8' } },
+                total: 2
+            } : null
+        });
+        activeListener.oncurrentplaytime(500);
+        activeListener.oncurrentplaytime(1200);
+        activeListener.oncurrentplaytime(2100);
+        ctx.PlayerParts.applyPreferredAudio();
+        assert.strictEqual(calls.some((c) => c.startsWith('select:AUDIO')), false, 'Live TV without per-channel memory must keep default audio track 0');
+
+        // 2. Playing video WITHOUT audio after grace window -> triggers nextSource fallback (.m3u8)
+        calls.length = 0;
+        currentStreamInfo = [{ type: 'VIDEO', index: 0, extra_info: JSON.stringify({ Width: 1920, Height: 1080, fourCC: 'h264' }) }];
+        totalTrackInfo = [];
+        ctx.PlayerParts.checkLiveAV(Date.now() + 6000);
+        await new Promise((r) => setTimeout(r, 180));
+        assert.ok(calls.indexOf('open:http://xt.example.com/live/u/p/301.m3u8') !== -1, 'Missing audio on playing video must fall back to nextSource (.m3u8)');
+
+        // 3. When .m3u8 ALSO plays video WITHOUT audio & no candidates remain -> falls back to liveOpen({ fix: true }) repack
+        calls.length = 0;
+        ctx.PlayerParts.S.playing = true;
+        ctx.PlayerParts.S.playStarted = true;
+        ctx.PlayerParts.checkLiveAV(Date.now() + 6000);
+        await new Promise((r) => setTimeout(r, 180));
+        assert.strictEqual(liveOpenCalls, 1, 'Exhausted candidates with no audio must attempt liveOpen audio repack');
+        assert.ok(calls.indexOf('open:http://localhost:8098/live/fixed.m3u8') !== -1, 'Service repack URL must be opened when audio is missing');
+
+        // 4. Audio-only TV stream (no VIDEO track) must trigger nextSource fallback
+        calls.length = 0;
+        currentStreamInfo = [{ type: 'AUDIO', index: 1, extra_info: JSON.stringify({ fourCC: 'aac', channels: 2 }) }];
+        ctx.Player.play({
+            url: 'http://xt.example.com/live/u/p/401.ts',
+            stream: { url: 'http://xt.example.com/live/u/p/401.ts' },
+            type: 'tv', id: 'iptv:ch401', name: 'TV Channel', isLive: true,
+            nextSource: (tried) => tried.length === 1 ? {
+                source: { url: 'http://xt.example.com/live/u/p/401.m3u8', stream: { url: 'http://xt.example.com/live/u/p/401.m3u8' } },
+                total: 2
+            } : null
+        });
+        await new Promise((r) => setTimeout(r, 180));
+        ctx.PlayerParts.S.playing = true;
+        ctx.PlayerParts.S.playStarted = true;
+        ctx.PlayerParts.checkLiveAV(Date.now() + 6000);
+        await new Promise((r) => setTimeout(r, 180));
+        assert.ok(calls.indexOf('open:http://xt.example.com/live/u/p/401.m3u8') !== -1, 'Audio-only TV stream must fall back to .m3u8');
+
+        ctx.Player.exit();
+    });
+
     console.log('\n===========================');
     console.log(`Summary: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 
