@@ -394,6 +394,14 @@ function loadBrowserScript(file, extraGlobals) {
             set: function (k, v) { storeData[k] = v; return Promise.resolve(true); },
             remove: function (k) { delete storeData[k]; return Promise.resolve(); }
         },
+        lru: function () {
+            var map = Object.create(null);
+            return {
+                get: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
+                set: function (k, v) { map[k] = v; },
+                clear: function () { map = Object.create(null); }
+            };
+        },
         log: function () {},
         problem: function (e) { return (e && e.message) || String(e); },
         parseUrl: function (u) {
@@ -617,6 +625,39 @@ async function run() {
         assert.strictEqual(chs[0].streamId, 101);
         assert.strictEqual(chs[0].archive, true);
         assert.strictEqual(chs[0].archiveDays, 7);
+    });
+
+    await runTest('xtVodNoVod (XtVod catalog removal when noVod toggled on)', async () => {
+        let noVodFlag = false;
+        let changeCount = 0;
+        const xtvCtx = loadBrowserScript('js/xtvod.js', {
+            IPTV: {
+                getPlaylists: () => [{ id: 'p1', url: 'http://tv.example.com:8080/get.php?username=alice&password=secret', noVod: noVodFlag }],
+                xtreamFormat: () => 'ts',
+                xtreamParts: () => ({ base: 'http://tv.example.com:8080', user: 'alice', pass: 'secret' }),
+                label: () => 'Xtream · tv.example.com'
+            }
+        });
+        xtvCtx.U.getJSON = () => Promise.resolve([]);
+        xtvCtx.U.store.set('stremiok.xtvod.cats', {
+            p1: {
+                sig: 'p1|http://tv.example.com:8080|alice',
+                movie: [['1', 'Action']],
+                series: [['2', 'Drama']],
+                at: Date.now()
+            }
+        });
+        xtvCtx.XtVod.onChange(() => { changeCount++; });
+        const addon = xtvCtx.XtVod.synthAddon();
+        assert.strictEqual(addon.manifest.catalogs.length, 2);
+        assert.strictEqual(addon.manifest.catalogs[0].id, 'xv.p1.movie');
+        assert.strictEqual(addon.manifest.catalogs[1].id, 'xv.p1.series');
+
+        // Toggle noVod ON -> reload(id) must drop the account's catalogs and notify onChange
+        noVodFlag = true;
+        xtvCtx.XtVod.reload('p1');
+        assert.strictEqual(addon.manifest.catalogs.length, 0);
+        assert.ok(changeCount >= 1);
     });
 
     await runTest('catchupUrl (Xtream Catch-Up URL formatter)', () => {

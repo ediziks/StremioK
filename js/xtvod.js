@@ -57,7 +57,13 @@ var XtVod = (function () {
     var _force = {}, _reloaded = {};
     function reload(id) {
         var acc = account(id), all = catsAll();
-        if (!acc) { return; }
+        if (!acc) {
+            if (all[id]) { delete all[id]; U.store.set(CATS_KEY, all); }
+            _catItems.clear(); _info.clear();
+            fillCatalogs();
+            changed();
+            return;
+        }
         delete all[id];
         U.store.set(CATS_KEY, all);
         _catsAsked[sigOf(acc)] = false;
