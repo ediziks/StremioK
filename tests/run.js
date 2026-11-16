@@ -766,6 +766,82 @@ async function run() {
         assert.strictEqual(chs.length, 1);
         assert.strictEqual(chs[0].name, 'Channel 1');
         assert.strictEqual(chs[0].ref, 'https://ref.example.com/');
+
+        // Failed force=1 refresh falls back to saved m3u-<hash>.jsonl with stale: true + error
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stremiok-m3u-'));
+        try {
+            const svc2 = loadService();
+            svc2.tokenDir = () => tmpDir;
+            svc2.entryAllowed = () => true;
+            const testUrl = 'https://example.com/saved.m3u';
+            const filePath = svc2.m3uFile(testUrl);
+            assert.ok(filePath && filePath.startsWith(tmpDir));
+            const metaLine = JSON.stringify({
+                key: testUrl,
+                at: 111111,
+                title: 'Saved List',
+                guides: ['https://epg.example.com/saved.xml'],
+                groups: [{ name: 'TR', type: 'tv', count: 1 }],
+                count: 1,
+                dropped: 0
+            });
+            const chLine = JSON.stringify(res.channels[0]);
+            fs.writeFileSync(filePath, metaLine + '\n' + chLine + '\n', 'utf8');
+
+            svc2.m3uFetch = (u, cb) => {
+                const err = new Error('HTTP 503');
+                err.status = 502;
+                cb(err);
+            };
+
+            function callM3uControl(reqPath, query) {
+                return new Promise((resolve) => {
+                    let status = 0;
+                    let body = '';
+                    const mockRes = {
+                        writeHead: (s) => { status = s; },
+                        write: (chunk) => { body += chunk; },
+                        end: (chunk) => { if (chunk) { body += chunk; } resolve({ status, body }); },
+                        on: () => {}
+                    };
+                    svc2.m3uControl({ headers: {} }, mockRes, reqPath, query);
+                });
+            }
+
+            const loadRes = await callM3uControl('/m3u/load', 'u=' + encodeURIComponent(testUrl) + '&force=1');
+            assert.strictEqual(loadRes.status, 200);
+            const loadJson = JSON.parse(loadRes.body);
+            assert.strictEqual(loadJson.state, 'ready');
+            assert.strictEqual(loadJson.stale, true);
+            assert.strictEqual(loadJson.error, 'HTTP 503');
+            assert.strictEqual(loadJson.title, 'Saved List');
+            assert.strictEqual(loadJson.at, 111111);
+            assert.strictEqual(loadJson.count, 1);
+
+            const chRes = await callM3uControl('/m3u/channels', 'u=' + encodeURIComponent(testUrl));
+            assert.strictEqual(chRes.status, 200);
+            const chJson = JSON.parse(chRes.body);
+            assert.strictEqual(chJson.channels.length, 1);
+            assert.strictEqual(chJson.channels[0].name, 'Channel 1');
+
+            // Browser IPTV.load preserves st.stale and st.error while loading saved channels
+            const staleIptvCtx = loadBrowserScript('js/iptv.js', {
+                YTPlay: {
+                    installMode: () => 'tizenbrew',
+                    m3uLoad: () => Promise.resolve(loadJson),
+                    m3uChannels: () => Promise.resolve(chJson)
+                }
+            });
+            const spid = staleIptvCtx.IPTV.addPlaylist(testUrl, 'Saved');
+            await staleIptvCtx.IPTV.load(true);
+            const sst = staleIptvCtx.IPTV.status(spid);
+            assert.strictEqual(sst.stale, true);
+            assert.strictEqual(sst.error, 'HTTP 503');
+            assert.strictEqual(sst.count, 1);
+            assert.strictEqual(staleIptvCtx.IPTV.channels().length, 1);
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
     });
 
     await runTest('escHtml (Phone QR group name HTML escaping)', () => {

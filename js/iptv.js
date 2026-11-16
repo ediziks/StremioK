@@ -733,8 +733,12 @@ var IPTV = (function () {
 
         function serviceM3ULoad() {
             return YTPlay.m3uLoad(playlist.url, playlist.groups, force).then(function (r) {
-                if (!r || r.state === 'failed' || r.error) {
+                if (!r || r.state === 'failed' || (r.error && !r.stale)) {
                     throw new Error((r && r.error) || U.t('Could not fetch the playlist URL'));
+                }
+                if (r.stale) {
+                    st.stale = true;
+                    if (r.error) { st.error = r.error; }
                 }
                 st.fetchedAt = r.at || Date.now();
                 st.title = r.title || '';

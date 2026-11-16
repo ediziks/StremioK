@@ -5976,14 +5976,14 @@ function m3uControl(req, res, path, query) {
     if (!x) {
         var keys = Object.keys(_m3u);
         if (keys.length >= M3U_KEEP) { keys.sort(function (a, b) { return _m3u[a].used - _m3u[b].used; }); delete _m3u[keys[0]]; }
-        x = _m3u[u] = { key: u, state: 'new', title: '', guides: [], groups: [], count: 0, dropped: 0, at: 0, items: null, saved: false, waiters: [] };
+        x = _m3u[u] = { key: u, state: 'new', title: '', guides: [], groups: [], count: 0, dropped: 0, at: 0, items: null, saved: false, stale: false, error: '', waiters: [] };
     }
     x.used = Date.now();
 
     function reply(err) {
         if (err) {
             send(res, err.status || 502, 'application/json', JSON.stringify({
-                state: 'failed', at: 0, title: '', guides: [], groups: [], count: 0, dropped: 0, error: err.message || 'failed'
+                state: 'failed', at: 0, title: '', guides: [], groups: [], count: 0, dropped: 0, stale: false, error: err.message || 'failed'
             }));
             return;
         }
@@ -6010,7 +6010,8 @@ function m3uControl(req, res, path, query) {
             groups: x.groups || [],
             count: filteredCount,
             dropped: x.dropped || 0,
-            error: ''
+            stale: !!x.stale,
+            error: x.error || ''
         }));
     }
 
@@ -6025,10 +6026,47 @@ function m3uControl(req, res, path, query) {
         var w = x.waiters; x.waiters = [];
         w.forEach(function (fn) { try { fn(err); } catch (e) {} });
     }
+    function applyMeta(meta) {
+        x.at = meta.at;
+        x.title = meta.title || '';
+        x.guides = meta.guides || [];
+        x.groups = meta.groups || [];
+        x.count = meta.count || 0;
+        x.dropped = meta.dropped || 0;
+        x.state = 'ready';
+        x.saved = true;
+        x.items = null;
+    }
     function fetchFromNet() {
         m3uFetch(u, function (err, r) {
             if (err) {
-                x.state = (x.saved || x.items) ? 'ready' : 'failed';
+                var errMsg = (err && err.message) || 'failed';
+                if (x.saved || x.items) {
+                    x.state = 'ready';
+                    x.stale = true;
+                    x.error = errMsg;
+                    finishWaiters(null);
+                    return;
+                }
+                if (m3uFile(x.key)) {
+                    m3uReadMeta(x, function (meta) {
+                        if (meta && meta.at) {
+                            applyMeta(meta);
+                            x.stale = true;
+                            x.error = errMsg;
+                            finishWaiters(null);
+                            return;
+                        }
+                        x.state = 'failed';
+                        x.stale = false;
+                        x.error = errMsg;
+                        finishWaiters(err);
+                    });
+                    return;
+                }
+                x.state = 'failed';
+                x.stale = false;
+                x.error = errMsg;
                 finishWaiters(err);
                 return;
             }
@@ -6039,6 +6077,8 @@ function m3uControl(req, res, path, query) {
             x.count = r.count || 0;
             x.dropped = r.dropped || 0;
             x.state = 'ready';
+            x.stale = false;
+            x.error = '';
             x.saved = false;
             if (m3uFile(x.key)) {
                 x.items = r.channels;
@@ -6054,15 +6094,9 @@ function m3uControl(req, res, path, query) {
         x.triedFile = true;
         m3uReadMeta(x, function (meta) {
             if (meta && meta.at && Date.now() - meta.at <= M3U_FRESH_MS) {
-                x.at = meta.at;
-                x.title = meta.title || '';
-                x.guides = meta.guides || [];
-                x.groups = meta.groups || [];
-                x.count = meta.count || 0;
-                x.dropped = meta.dropped || 0;
-                x.state = 'ready';
-                x.saved = true;
-                x.items = null;
+                applyMeta(meta);
+                x.stale = false;
+                x.error = '';
                 finishWaiters(null);
                 return;
             }
