@@ -80,7 +80,7 @@
             return HOME_TABS.filter(function (t) { return shown(t) && (t.key !== 'local' || hasLocal()); });
         }
         return HOME_TABS.filter(function (t) {
-            return shown(t) && (t.key === 'continue' || t.key === 'calendar' || t.key === 'guide' || (t.key === 'local' ? hasLocal() : catsForTab(t.key).length > 0));
+            return shown(t) && (t.key === 'continue' || t.key === 'calendar' || t.key === 'guide' || (t.key === 'local' ? hasLocal() : ((t.key === 'tv' && typeof IPTV !== 'undefined' && IPTV.channels && IPTV.channels().length > 0) || catsForTab(t.key).length > 0)));
         });
     }
 
@@ -1238,7 +1238,14 @@
     }
 
     // Switch the active home tab (from the shared top menu) and show it.
-    function setHomeTab(key) { _homeTab = key || _homeTab; _focusFirstCard = 'new'; _wantTab = null; _wantGuide = null; }
+    function setHomeTab(key) {
+        var prev = _homeTab, next = key || _homeTab;
+        if (prev === 'tv' && next !== 'tv' && V.iptvLeave) { V.iptvLeave(); }
+        if ((prev === 'tv' || prev === 'guide') && next !== 'tv' && next !== 'guide') {
+            if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
+        }
+        _homeTab = next; _focusFirstCard = 'new'; _wantTab = null; _wantGuide = null;
+    }
     // A tab asked for whose rows are still coming (a first playlist's IPTV tab): shown when they
     // come, if Home is still on the tab it showed instead. { key, instead }
     var _wantTab = null;
@@ -1281,20 +1288,23 @@
         }
 
         var hero = U.look() === 'modern' && !NO_HERO[_homeTab];   // (Modern: the focused title's backdrop, behind it all)
+        if (s.classList) { s.classList[_homeTab === 'tv' ? 'add' : 'remove']('tab-tv'); }
         if (hero) { s.appendChild(homeBackdrop(_homeTab)); }
         s.appendChild(buildTopMenu(_homeTab));
-        // The focused title's details, between the top menu and the rows (#home-info); Modern's
-        // title tabs: large, over the backdrop (hero).
-        var info = U.el('div', 'home-info' + (hero ? ' hero' : ''));
-        info.appendChild(U.el('div', 'home-info-title'));
-        info.appendChild(U.el('div', 'home-info-meta'));
-        info.appendChild(U.el('div', 'home-info-desc'));
-        s.appendChild(info);
+        if (_homeTab !== 'tv') {
+            // The focused title's details, between the top menu and the rows (#home-info); Modern's
+            // title tabs: large, over the backdrop (hero).
+            var info = U.el('div', 'home-info' + (hero ? ' hero' : ''));
+            info.appendChild(U.el('div', 'home-info-title'));
+            info.appendChild(U.el('div', 'home-info-meta'));
+            info.appendChild(U.el('div', 'home-info-desc'));
+            s.appendChild(info);
+        }
 
         // Rows for the active tab, from the once-per-session catalog cache. Catalog tabs
         // keep their built rows, so switching back doesn't rebuild every card; Continue
         // Watching is small and changes after every playback, so it's always rebuilt.
-        var rows = (_homeTab !== 'continue' && _homeTab !== 'local' && _homeTab !== 'calendar' && _homeTab !== 'guide') ? _tabRows[_homeTab] : null;
+        var rows = (_homeTab !== 'continue' && _homeTab !== 'local' && _homeTab !== 'calendar' && _homeTab !== 'guide' && _homeTab !== 'tv') ? _tabRows[_homeTab] : null;
         if (_homeTab !== 'calendar' && _calCancel) { _calCancel.cancel(); _calCancel = null; }   // (its titles' details still coming: not wanted)
         if (rows) {
             s.appendChild(rows);
@@ -1308,6 +1318,8 @@
                 calendarRows(rows);
             } else if (_homeTab === 'guide') {
                 V.guideGrid(rows);
+            } else if (_homeTab === 'tv') {
+                if (V.iptvBrowser) { V.iptvBrowser(rows); }
             } else if (_homeTab === 'continue') {
                 var entries = continueEntries();
                 if (entries.length) {
@@ -1341,12 +1353,12 @@
         var landed = false;
         var sameItem = (!firstCard && inMenu) ? menuItem(s, cur.textContent) : null;   // the menu item focus was on
         var rowsEl = s.querySelector('.rows'), fc = Focus.current();
-        if (_homeTab === 'guide' && fc && rowsEl && rowsEl.contains(fc)) { landed = true; }   // (the Guide drawn from what it had put focus back on its program)
+        if ((_homeTab === 'guide' || _homeTab === 'tv') && fc && rowsEl && rowsEl.contains(fc)) { landed = true; }   // (the Guide / IPTV browser placed focus cleanly)
         else if (again || sameItem) { Focus.setScope(s, again || sameItem); } else { landed = focusHome(s, !firstCard && inMenu); }
         if (_homeCatalogs === null || homeStale() || _reloadOnly) { loadHomeCatalogs(); }
         // No title to focus yet: try again when the rows arrive (Continue Watching and a
         // tab with no catalogs have nothing coming, so focus simply stays on the pill).
-        _focusFirstCard = (firstCard && !landed && _homeLoading && _homeTab !== 'continue' && _homeTab !== 'calendar' && _homeTab !== 'guide') ? 'pending' : false;
+        _focusFirstCard = (firstCard && !landed && _homeLoading && _homeTab !== 'continue' && _homeTab !== 'calendar' && _homeTab !== 'guide' && _homeTab !== 'tv') ? 'pending' : false;
         _renderedSig = tabSig();
         _renderedMenu = menuSig();
         if (s.querySelector('.rows .card')) { U.mark('firstCard'); }
@@ -1517,15 +1529,16 @@
     // to tell whether a refresh changed it. Continue Watching shows none of it.
     function shownSig() {
         if (_homeTab === 'continue' || _homeTab === 'calendar' || _homeTab === 'guide') { return _homeTab; }
+        if (_homeTab === 'tv') { return 'tv:' + (typeof IPTV !== 'undefined' && IPTV.channels ? IPTV.channels().length : 0); }
         return _homeTab + '#' + catsForTab(_homeTab).map(function (c) {
             return c.name + ':' + c.metas.map(function (m) { return m.id + '/' + (m.poster || ''); }).join(',');
         }).join('|');
     }
     var _renderedSig = '', _renderedMenu = '';
-    // The tabs that aren't drawn from catalogs (Watching, Calendar, Guide, Local): catalogs that
+    // The tabs that aren't drawn from catalogs (Watching, Calendar, Guide, Local, IPTV): catalogs that
     // arrive don't change them, only the top menu might (a tab coming). Redrawing one rebuilds it
     // whole (the Guide asks for its programs again): a flicker, so not unless the menu changed.
-    function ownTab(t) { return t === 'continue' || t === 'calendar' || t === 'guide' || t === 'local'; }
+    function ownTab(t) { return t === 'continue' || t === 'calendar' || t === 'guide' || t === 'local' || t === 'tv'; }
     function menuSig() { return availableTabs().map(function (t) { return t.key; }).join(','); }
     function ownTabStill() { return ownTab(_homeTab) && menuSig() === _renderedMenu; }
     function tabSig() {
@@ -1772,6 +1785,12 @@
     V.MENU_ITEMS = MENU_ITEMS;
     V.HOME_TABS = HOME_TABS;
     V.buildRow = buildRow;
+    V.currentHomeTab = function () { return _homeTab; };
+    V.syncLiveBrowse = function (id) {
+        if (_homeTab === 'tv' && V.iptvBackOn) { return V.iptvBackOn(id); }
+        if (_homeTab === 'guide' && V.guideBackOn) { return V.guideBackOn(id); }
+        return null;
+    };
     V.clearCatalogCache = clearCatalogCache;
     V.refreshAddonRows = refreshAddonRows;
     V.homeDirty = homeDirty;

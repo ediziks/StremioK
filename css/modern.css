@@ -159,3 +159,15 @@ body.look-modern.bg-light.live-behind .home-header .tab-pill { color: rgba(255,2
 body.look-modern.bg-light.live-behind .home-header .tab-pill.active { background: rgba(255,255,255,0.2); color: #fff; }
 body.look-modern.bg-light.live-behind .tab-pill.focusable.focused,
 body.look-modern.bg-light.live-behind .header .hchip.focusable.focused { background: #ffffff; color: #0e1117; border-color: #ffffff; }
+body.look-modern #screen-home.tab-tv .rows { top: 104px; }
+body.look-modern.fx-full .iptv-chip.focusable.focused,
+body.look-modern.fx-full .iptv-row.focusable.focused,
+body.look-modern.fx-full .iptv-cat.focusable.focused,
+body.look-modern.fx-full .iptv-act-btn.focusable.focused { -webkit-transition: background 0.12s ease, border-color 0.12s ease; transition: background 0.12s ease, border-color 0.12s ease; }
+body.look-modern.bg-light:not(.live-behind) .iptv-pane { background: rgba(255, 255, 255, 0.85); color: #111; border-color: rgba(0, 0, 0, 0.1); }
+body.look-modern.bg-light:not(.live-behind) .iptv-row,
+body.look-modern.bg-light:not(.live-behind) .iptv-cat { background: rgba(0, 0, 0, 0.05); color: #111; }
+body.look-modern.bg-light:not(.live-behind) .iptv-insp-title,
+body.look-modern.bg-light:not(.live-behind) .iptv-epg-main-title { color: #111; }
+body.look-modern.bg-light:not(.live-behind) .iptv-epg-desc,
+body.look-modern.bg-light:not(.live-behind) .iptv-next-item { color: #333; }

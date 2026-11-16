@@ -1451,6 +1451,101 @@ async function run() {
         assert.ok(orbitStopped >= 1);
     });
 
+    await runTest('viewIptv windowing (2000 channels render <= 10 DOM rows & <= 11 categories)', async () => {
+        const makeEl = (id, tag) => {
+            const clsSet = new Set();
+            const node = {
+                id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
+                children: [], parentNode: null, listeners: {},
+                classList: {
+                    add: (c) => { clsSet.add(c); node.className = Array.from(clsSet).join(' '); },
+                    remove: (c) => { clsSet.delete(c); node.className = Array.from(clsSet).join(' '); },
+                    contains: (c) => clsSet.has(c)
+                },
+                appendChild: (c) => { c.parentNode = node; node.children.push(c); return c; },
+                removeChild: (c) => { const i = node.children.indexOf(c); if (i !== -1) node.children.splice(i, 1); return c; },
+                addEventListener: (ev, fn) => { node.listeners[ev] = fn; },
+                querySelector: (sel) => {
+                    const cls = sel.replace(/^\./, '');
+                    const walk = (root) => {
+                        for (const ch of root.children) {
+                            if (ch.classList && ch.classList.contains(cls)) return ch;
+                            const nested = walk(ch);
+                            if (nested) return nested;
+                        }
+                        return null;
+                    };
+                    return walk(node);
+                },
+                querySelectorAll: (sel) => {
+                    const out = [];
+                    const parts = sel.split('.').filter(Boolean);
+                    const walk = (root) => {
+                        for (const ch of root.children) {
+                            if (parts.every((p) => ch.classList && ch.classList.contains(p))) out.push(ch);
+                            walk(ch);
+                        }
+                    };
+                    walk(node);
+                    return out;
+                }
+            };
+            return node;
+        };
+        const channels = [];
+        for (let i = 1; i <= 2000; i++) {
+            channels.push({
+                id: 'iptv:ch-' + i,
+                type: 'tv',
+                name: 'Channel ' + i,
+                group: 'TR · Group ' + ((i % 40) + 1),
+                logo: '',
+                variants: [{ id: 'iptv:ch-' + i, badge: 'FHD', rawName: 'Channel ' + i + ' FHD' }],
+                _qBadge: 'FHD'
+            });
+        }
+        const wrap = makeEl('rows', 'DIV');
+        const baseCtx = loadBrowserScript('js/iptv.js');
+        const extraU = Object.assign({}, baseCtx.U, {
+            el: (tag, cls, txt) => {
+                const n = makeEl('', (tag || 'div').toUpperCase());
+                if (cls) cls.split(/\s+/).forEach((c) => { if (c) n.classList.add(c); });
+                if (txt !== undefined) n.textContent = String(txt);
+                return n;
+            },
+            clear: (n) => { n.children = []; n.textContent = ''; },
+            toast: () => {}
+        });
+        let focused = null;
+        const ctx = loadBrowserScript('js/view-iptv.js', {
+            U: extraU,
+            ViewParts: { scr: () => wrap, pickList: () => {}, refreshAddonRows: () => {} },
+            IPTV: { channels: () => channels, isFavorite: () => false, getTidyCfg: () => ({ enabled: true, countries: ['TR', 'UK', 'NL'] }) },
+            EPG: { want: () => {}, now: () => null, schedule: () => [], onChange: () => {}, hhmm: () => '20:00', hasGuide: () => false, logo: () => '' },
+            Player: { isLivePlaying: () => false, currentLiveId: () => '', onLiveMetaChange: () => () => {} },
+            Stremio: { getPrefs: () => ({ liveBrowseMode: true }) },
+            Focus: {
+                current: () => focused,
+                setFocus: (n) => { focused = n; },
+                setScope: (s, n) => { focused = n || focused; }
+            },
+            document: { documentElement: wrap, contains: () => true }
+        });
+        wrap.contains = () => true;
+        ctx.ViewParts.iptvBrowser(wrap);
+        const rows = wrap.querySelectorAll('.iptv-row');
+        const cats = wrap.querySelectorAll('.iptv-cat');
+        assert.strictEqual(rows.length, 10, 'Center pane must render exactly 10 channel rows in DOM');
+        assert.strictEqual(cats.length, 11, 'Left rail must cap at 11 category rows in DOM');
+
+        // Scroll DOWN past row 9 into channel #11 and verify DOM remains capped at 10 rows
+        let cur = rows[9];
+        const next = cur.__goDOWN();
+        assert.strictEqual(next, false);
+        assert.strictEqual(wrap.querySelectorAll('.iptv-row').length, 10);
+        assert.strictEqual(focused.__absIdx, 10);
+    });
+
     console.log('\n===========================');
     console.log(`Summary: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 
