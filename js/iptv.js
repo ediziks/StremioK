@@ -718,9 +718,7 @@ var IPTV = (function () {
             var up = word.toUpperCase();
             return (COUNTRY_WORDS[up] || (country && up === country)) ? '' : all;
         });
-        g = g.replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '');
-        g = g.replace(/\s+(?:VIP|RAW)$/i, '');
-        g = g.replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
+        g = g.replace(DECOR_BOUND, '').replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '').replace(/\s+(?:VIP|RAW)$/i, '').replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
         if (!g) { g = 'Live TV'; }
         g = g.split(' ').map(function (w) {
             var up = w.toUpperCase();

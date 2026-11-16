@@ -9,6 +9,16 @@
 
     var CAT_ROWS = 11;
     var CHAN_ROWS = 10;
+    function visibleCatRows() {
+        var h = _st.paneCatsEl && _st.paneCatsEl.clientHeight;
+        if (!h || h <= 0) { return CAT_ROWS; }
+        return Math.max(5, Math.min(CAT_ROWS, Math.floor((h - 24) / 66)));
+    }
+    function visibleChanRows() {
+        var h = _st.paneChansEl && _st.paneChansEl.clientHeight;
+        if (!h || h <= 0) { return CHAN_ROWS; }
+        return Math.max(5, Math.min(CHAN_ROWS, Math.floor((h - 24) / 80)));
+    }
     var RECENT_KEY = 'stremiok.iptv.recent';
     var RECENT_MAX = 25;
     var MONO_COLORS = ['#4f46e5', '#0f766e', '#0369a1', '#9333ea', '#be123c', '#b45309', '#15803d', '#334155'];
@@ -260,14 +270,15 @@
     function renderCatsWindow(setFocusHere) {
         var host = _st.paneCatsEl;
         if (!host) { return; }
+        var catCap = visibleCatRows();
         if (_st.catIdx >= _st.cats.length) { _st.catIdx = Math.max(0, _st.cats.length - 1); }
         if (_st.catIdx < _st.catTop) { _st.catTop = _st.catIdx; }
-        else if (_st.catIdx >= _st.catTop + CAT_ROWS) { _st.catTop = _st.catIdx - CAT_ROWS + 1; }
-        _st.catTop = Math.max(0, Math.min(_st.catTop, Math.max(0, _st.cats.length - CAT_ROWS)));
+        else if (_st.catIdx >= _st.catTop + catCap) { _st.catTop = _st.catIdx - catCap + 1; }
+        _st.catTop = Math.max(0, Math.min(_st.catTop, Math.max(0, _st.cats.length - catCap)));
 
         U.clear(host);
         _st.catNodes = [];
-        var visible = _st.cats.slice(_st.catTop, _st.catTop + CAT_ROWS);
+        var visible = _st.cats.slice(_st.catTop, _st.catTop + catCap);
         var activeNode = null;
         visible.forEach(function (g, offset) {
             var abs = _st.catTop + offset;
@@ -290,7 +301,7 @@
             row.__goDOWN = function () {
                 if (abs >= _st.cats.length - 1) { return false; }
                 _st.catIdx = abs + 1;
-                if (_st.catIdx >= _st.catTop + CAT_ROWS) { renderCatsWindow(true); return false; }
+                if (_st.catIdx >= _st.catTop + catCap) { renderCatsWindow(true); return false; }
                 return _st.catNodes[_st.catIdx - _st.catTop];
             };
             row.addEventListener('focus', function () {
@@ -358,25 +369,27 @@
 
     function openCatchupModal(ch) {
         if (!ch || !ch.archive || typeof EPG === 'undefined' || !EPG.schedule || typeof IPTV === 'undefined' || !IPTV.catchupUrl) { return; }
-        var now = Date.now() / 1000;
-        var aired = (EPG.schedule(ch.id) || []).filter(function (p) {
-            return p.stop <= now && !!IPTV.catchupUrl(ch.id, p.start, p.stop);
-        }).slice(-20).reverse();
-        if (!aired.length) { U.toast(U.t('No catch-up programs found in guide'), 2500); return; }
-        var items = aired.map(function (p, i) { return [String(i), hhmm(p.start) + '  ' + p.title]; });
-        pickList(ch.name + ' · ' + U.t('↺ Catch-up'), items, '0', function (val) {
-            var p = aired[+val || 0];
-            if (!p) { return; }
-            var cu = IPTV.catchupUrl(ch.id, p.start, p.stop);
-            if (!cu) { return; }
-            var focusNode = Focus.current();
-            if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
-            Player.play({
-                url: cu, type: ch.type || 'tv', id: ch.id, name: p.title + ' · ' + ch.name,
-                poster: ch.logo || '', isLive: false, fromStart: true,
-                streams: [], stream: { url: cu, _vod: true, _catchup: true }
-            }, function () {
-                if (focusNode && document.documentElement.contains(focusNode)) { Focus.setScope(scr('home'), focusNode); }
+        Promise.resolve(EPG.schedule(ch.id)).then(function (list) {
+            var now = Date.now() / 1000;
+            var aired = (Array.isArray(list) ? list : []).filter(function (p) {
+                return p.stop <= now && !!IPTV.catchupUrl(ch.id, p.start, p.stop);
+            }).slice(-20).reverse();
+            if (!aired.length) { U.toast(U.t('No catch-up programs found in guide'), 2500); return; }
+            var items = aired.map(function (p, i) { return [String(i), hhmm(p.start) + '  ' + p.title]; });
+            pickList(ch.name + ' · ' + U.t('↺ Catch-up'), items, '0', function (val) {
+                var p = aired[+val || 0];
+                if (!p) { return; }
+                var cu = IPTV.catchupUrl(ch.id, p.start, p.stop);
+                if (!cu) { return; }
+                var focusNode = Focus.current();
+                if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
+                Player.play({
+                    url: cu, type: ch.type || 'tv', id: ch.id, name: p.title + ' · ' + ch.name,
+                    poster: ch.logo || '', isLive: false, fromStart: true,
+                    streams: [], stream: { url: cu, _vod: true, _catchup: true }
+                }, function () {
+                    if (focusNode && document.documentElement.contains(focusNode)) { Focus.setScope(scr('home'), focusNode); }
+                });
             });
         });
     }
@@ -520,20 +533,35 @@
             epgBox.appendChild(U.el('div', 'iptv-epg-desc', U.t('No live guide information for this channel yet.')));
         }
 
-        if (typeof EPG !== 'undefined' && EPG.schedule) {
-            var nowSec = Date.now() / 1000;
-            var upcoming = (EPG.schedule(ch.id) || []).filter(function (p) { return p.start > nowSec; }).slice(0, 3);
-            if (upcoming.length) {
-                epgBox.appendChild(U.el('div', 'iptv-epg-kicker iptv-next-kicker', U.t('UP NEXT')));
+        var nextWrap = U.el('div', 'iptv-insp-next');
+        if (ep && ep.next) {
+            nextWrap.appendChild(U.el('div', 'iptv-epg-kicker iptv-next-kicker', U.t('UP NEXT')));
+            var immediateItem = U.el('div', 'iptv-next-item');
+            immediateItem.appendChild(U.el('span', 'iptv-next-time', hhmm(ep.next.start)));
+            immediateItem.appendChild(U.el('span', 'iptv-next-title', ep.next.title));
+            nextWrap.appendChild(immediateItem);
+        }
+        epgBox.appendChild(nextWrap);
+        host.appendChild(epgBox);
+
+        if (typeof EPG !== 'undefined' && EPG.schedule && EPG.hasGuide && EPG.hasGuide(ch.id)) {
+            Promise.resolve(EPG.schedule(ch.id)).then(function (list) {
+                if (!_st.mounted || !document.documentElement.contains(nextWrap)) { return; }
+                var curSel = _st.chans[_st.chanIdx];
+                if (!curSel || curSel.id !== ch.id) { return; }
+                var nowSec = Date.now() / 1000;
+                var upcoming = (Array.isArray(list) ? list : []).filter(function (p) { return p.start > nowSec; }).slice(0, 3);
+                if (!upcoming.length) { return; }
+                U.clear(nextWrap);
+                nextWrap.appendChild(U.el('div', 'iptv-epg-kicker iptv-next-kicker', U.t('UP NEXT')));
                 upcoming.forEach(function (u) {
                     var item = U.el('div', 'iptv-next-item');
                     item.appendChild(U.el('span', 'iptv-next-time', hhmm(u.start)));
                     item.appendChild(U.el('span', 'iptv-next-title', u.title));
-                    epgBox.appendChild(item);
+                    nextWrap.appendChild(item);
                 });
-            }
+            }, function () {});
         }
-        host.appendChild(epgBox);
     }
 
     function renderChansWindow(forceRedraw, focusHere) {
@@ -561,14 +589,15 @@
             return;
         }
 
+        var chanCap = visibleChanRows();
         if (_st.chanIdx >= list.length) { _st.chanIdx = Math.max(0, list.length - 1); }
         if (_st.chanIdx < _st.winTop) { _st.winTop = _st.chanIdx; }
-        else if (_st.chanIdx >= _st.winTop + CHAN_ROWS) { _st.winTop = _st.chanIdx - CHAN_ROWS + 1; }
-        _st.winTop = Math.max(0, Math.min(_st.winTop, Math.max(0, list.length - CHAN_ROWS)));
+        else if (_st.chanIdx >= _st.winTop + chanCap) { _st.winTop = _st.chanIdx - chanCap + 1; }
+        _st.winTop = Math.max(0, Math.min(_st.winTop, Math.max(0, list.length - chanCap)));
 
         U.clear(host);
         _st.chanNodes = [];
-        var visible = list.slice(_st.winTop, _st.winTop + CHAN_ROWS);
+        var visible = list.slice(_st.winTop, _st.winTop + chanCap);
         var activeNode = null;
         visible.forEach(function (ch, offset) {
             var absIdx = _st.winTop + offset;
@@ -629,7 +658,7 @@
                 if (absIdx >= list.length - 1) { return false; }
                 _st.chanIdx = absIdx + 1;
                 _st.lastChanByGrp[_st.grpKey] = _st.chanIdx;
-                if (_st.chanIdx >= _st.winTop + CHAN_ROWS) { renderChansWindow(true, true); return false; }
+                if (_st.chanIdx >= _st.winTop + chanCap) { renderChansWindow(true, true); return false; }
                 var nextNode = _st.chanNodes[_st.chanIdx - _st.winTop];
                 renderInspector(nextNode ? nextNode.__chan : null);
                 return nextNode || false;

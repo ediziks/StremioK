@@ -645,7 +645,7 @@ body.live-behind .guide-prog.now { background: rgba(34, 46, 70, 0.82); color: #f
 .iptv-pane-chans { flex: 1; min-width: 0; }
 .iptv-pane-insp { width: 520px; flex: none; padding: 20px 22px; }
 
-.iptv-cat { display: flex; align-items: center; justify-content: space-between; height: 64px; box-sizing: border-box; padding: 0 14px; margin-bottom: 6px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 3px solid transparent; color: #cfd5e2; font-size: 20px; }
+.iptv-cat { display: flex; align-items: center; justify-content: space-between; height: 60px; box-sizing: border-box; padding: 0 14px; margin-bottom: 6px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 3px solid transparent; color: #cfd5e2; font-size: 20px; }
 .iptv-cat.active { background: rgba(129, 140, 248, 0.22); color: #fff; border-left: 5px solid #818cf8; }
 .iptv-cat.focusable.focused { background: #818cf8; color: #0e1117; border-color: #ffffff; }
 .iptv-cat-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; margin-right: 8px; }
