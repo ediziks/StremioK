@@ -65,6 +65,25 @@
         hideSkip();
         S.subMenuEl.className = 'hidden';
         S.barEl.className = 'hidden';
+        resetPauseDim();
+    }
+    var _pauseDimTimer = null;
+    function setPauseDim(on) {
+        var ids = ['player-osd', 'player-bar'];
+        ids.forEach(function (id) {
+            var el = U.byId(id);
+            if (el && el.classList) { el.classList[on ? 'add' : 'remove']('oled-dim'); }
+        });
+    }
+    function resetPauseDim() {
+        if (_pauseDimTimer) { clearTimeout(_pauseDimTimer); _pauseDimTimer = null; }
+        setPauseDim(false);
+        if (S.active && isPaused()) {
+            _pauseDimTimer = setTimeout(function () {
+                _pauseDimTimer = null;
+                if (S.active && isPaused()) { setPauseDim(true); }
+            }, 120000);
+        }
     }
     // Playback stopped: everything closed (without bringing the progress bar back up).
     function closeControls() {
@@ -171,6 +190,7 @@
         if (isPaused()) { play_(); } else { pause_(); }
         showOSD(false);
         if (_barOpen) { renderBar(); barIdle(); }
+        resetPauseDim();
     }
 
     // ---------- scrubbing (LEFT/RIGHT, FF/REW) ----------
@@ -1052,6 +1072,7 @@
     }
     function handleKey(action) {
         if (!S.active) { return true; }
+        resetPauseDim();
         // Dedicated transport keys ALWAYS control playback, even with an overlay open (#9).
         switch (action) {
             case 'PLAY': play_(); if (_barOpen) { renderBar(); barIdle(); } showOSD(false); return true;
@@ -1101,7 +1122,13 @@
             case 'LEFT': if (S.isLive && !menuOpen() && !_barOpen) { openChannelDrawer(); return true; } scrub(-seekStep()); return true;
             case 'UP': openBar(); return true;
             case 'DOWN': openMenu(); return true;
-            case 'BACK': exit(); return true;
+            case 'BACK':
+                if (S.isLive && S.ctx && S.ctx.fromHome && typeof Stremio !== 'undefined' && Stremio.getPrefs && Stremio.getPrefs().liveBrowseMode) {
+                    if (P.setBrowseOverlay) { P.setBrowseOverlay(true); }
+                    if (S.ctx.onBrowseReturn) { S.ctx.onBrowseReturn(S.ctx.id); }
+                    return true;
+                }
+                exit(); return true;
         }
         return true;
     }
@@ -1272,5 +1299,5 @@
     P.rootMenu = rootMenu;
     P.closeControls = closeControls; P.showSkip = showSkip; P.skipTick = skipTick; P.renderScrub = renderScrub; P.topMenu = topMenu;
     P.closeMenu = closeMenu; P.pushMenu = pushMenu; P.popMenu = popMenu; P.replaceTop = replaceTop; P.applyAspect = applyAspect;
-    P.handleKey = handleKey; P.ytLinksTick = ytLinksTick; P.phoneLink = phoneLink;
+    P.handleKey = handleKey; P.ytLinksTick = ytLinksTick; P.phoneLink = phoneLink; P.togglePlay = togglePlay; P.toggleStreamInfo = toggleStreamInfo;
 })(PlayerParts);

@@ -57,6 +57,7 @@ var PlayerParts = {};
     var S = P.S = {
         active: false,
         ctx: null,           // { id, type, name, poster, resumeSec, url, ... } of what's playing
+        browseOverlay: false,
         dur: 0,              // seconds
         cur: 0,              // seconds
         isLive: false,       // live stream (sports/IPTV): no fixed duration
@@ -208,12 +209,14 @@ var PlayerParts = {};
         if (S.subsEl) { S.subsEl.style.bottom = Math.max(subsPosPx(), S.subsLift) + 'px'; }
     }
     function showOSD(sticky) {
+        if (S.browseOverlay) { hideOSD(); return; }
         var wasHidden = osdHidden();
         U.byId('player-osd').className = '';
         liftSubs(barShown() ? SUBS_OVER_BAR : SUBS_OVER_OSD);
         if (wasHidden && S.ctx) { renderOSD(); }   // it isn't kept current while hidden
         if (_osdTimer) { clearTimeout(_osdTimer); _osdTimer = null; }
         if (!sticky) { _osdTimer = setTimeout(hideOSD, 4000); }
+        if (U.startOledOrbit) { U.startOledOrbit(); }
     }
     function hideOSD() { U.byId('player-osd').className = 'hidden'; liftSubs(0); }
     function osdHidden() { return U.byId('player-osd').className.indexOf('hidden') !== -1; }
@@ -295,28 +298,119 @@ var PlayerParts = {};
 
     // What's playing, in short (next to the duration): the source's formats (ctx.formatInfo, else
     // read from its link), with what the TV's player reports where it does (read once it plays).
+    var _lastTagsText = '';
+    var _liveMetaFns = [];
+    var _metaPollTimer = null;
+    function parseFps(raw) {
+        if (raw === undefined || raw === null || raw === '') { return 0; }
+        var v = 0;
+        if (typeof raw === 'number') { v = raw; }
+        else {
+            var s = ('' + raw).trim();
+            var frac = /^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/.exec(s);
+            if (frac) { var den = +frac[2]; v = den > 0 ? (+frac[1] / den) : 0; }
+            else { v = parseFloat(s) || 0; }
+        }
+        if (!isFinite(v) || v < 10 || v > 120) { return 0; }
+        return Math.abs(v - Math.round(v)) < 0.02 ? Math.round(v) : (Math.round(v * 100) / 100);
+    }
+    function currentTagsText() {
+        if (!S.ctx || S.ctx.trailer || typeof Stremio === 'undefined' || !Stremio.formatTags) { return ''; }
+        if (S.playStarted && !S.actual) { S.actual = playerFormats(); }
+        return Stremio.formatTags(S.ctx.formatInfo || (Stremio.streamInfo ? Stremio.streamInfo({ url: S.ctx.url, name: S.ctx.name }) : null), S.actual);
+    }
     function renderTags() {
         var el = U.byId('osd-tags');
         if (!el) { return; }
-        var t = '';
-        if (S.ctx && !S.ctx.trailer && typeof Stremio !== 'undefined' && Stremio.formatTags) {
-            if (S.playStarted && !S.actual) { S.actual = playerFormats(); }
-            t = Stremio.formatTags(S.ctx.formatInfo || (Stremio.streamInfo ? Stremio.streamInfo({ url: S.ctx.url, name: S.ctx.name }) : null), S.actual);
-        }
-        if (el.textContent !== t) { el.textContent = t; }
+        var t = currentTagsText();
+        if (t === _lastTagsText) { return; }
+        _lastTagsText = t;
+        U.clear(el);
+        if (!t) { return; }
+        t.split(' · ').forEach(function (tok) {
+            var hi = /^(?:4K|UHD|HEVC|AV1|HDR10\+?|Dolby Vision|\d+(?:\.\d+)?fps)$/i.test(tok);
+            el.appendChild(U.el('span', 'osd-tag-pill' + (hi ? ' hi' : ''), tok));
+        });
     }
     function playerFormats() {
         var out = {};
-        if (!useAV) { if (S.videoEl && S.videoEl.videoHeight) { out.height = S.videoEl.videoHeight; } return out; }
+        if (!useAV) {
+            if (S.videoEl && S.videoEl.videoHeight) { out.height = S.videoEl.videoHeight; out.width = S.videoEl.videoWidth || 0; }
+            return out;
+        }
         try {
             (avplay.getCurrentStreamInfo() || []).forEach(function (x) {
                 var t = ('' + x.type).toUpperCase(), e = {};
                 try { e = typeof x.extra_info === 'string' ? JSON.parse(x.extra_info) : (x.extra_info || {}); } catch (er) {}
-                if (t === 'VIDEO') { out.height = +(e.Height || e.height) || 0; out.codec = e.fourCC || e.codec || ''; }
+                if (t === 'VIDEO') {
+                    out.width = +(e.Width || e.width) || 0;
+                    out.height = +(e.Height || e.height) || 0;
+                    out.codec = e.fourCC || e.codec || '';
+                    out.fps = parseFps(e.FrameRate || e.frameRate || e.fps || e.framerate);
+                    out.bitrate = +(e.Bit_rate || e.bit_rate || e.bitrate) || 0;
+                }
                 if (t === 'AUDIO') { out.audio = e.fourCC || e.codec || ''; out.channels = +(e.channels || e.Channels) || 0; }
             });
         } catch (er2) {}
         return out;
+    }
+    function isLivePlaying() { return !!(S.active && S.isLive); }
+    function isBrowseOverlay() { return !!(S.active && S.isLive && S.browseOverlay); }
+    function currentLiveId() { return (S.active && S.isLive && S.ctx && S.ctx.id) ? S.ctx.id : ''; }
+    function liveMeta() {
+        if (!S.active || !S.isLive || !S.ctx) { return null; }
+        var a = S.actual || {};
+        return {
+            id: S.ctx.id || '', name: S.ctx.name || '',
+            codec: a.codec || '', width: +a.width || 0, height: +a.height || 0,
+            fps: +a.fps || 0, bitrate: +a.bitrate || 0,
+            audio: a.audio || '', channels: +a.channels || 0,
+            tags: currentTagsText(), browseOverlay: !!S.browseOverlay
+        };
+    }
+    function onLiveMetaChange(fn) {
+        if (typeof fn === 'function' && _liveMetaFns.indexOf(fn) === -1) { _liveMetaFns.push(fn); }
+        return function () { _liveMetaFns = _liveMetaFns.filter(function (f) { return f !== fn; }); };
+    }
+    function emitLiveMeta() {
+        var snap = liveMeta();
+        _liveMetaFns.slice().forEach(function (fn) { try { fn(snap); } catch (e) {} });
+    }
+    function scheduleMetaPoll() {
+        if (_metaPollTimer) { clearTimeout(_metaPollTimer); _metaPollTimer = null; }
+        if (!S.active || !S.isLive) { return; }
+        var token = _playToken;
+        _metaPollTimer = setTimeout(function () {
+            _metaPollTimer = null;
+            if (!S.active || token !== _playToken || !S.isLive) { return; }
+            S.actual = playerFormats();
+            renderTags();
+            emitLiveMeta();
+        }, 2500);
+    }
+    function setBrowseOverlay(on) {
+        if (!S.active || !S.isLive) {
+            S.browseOverlay = false;
+            if (document.body && document.body.classList) { document.body.classList.remove('live-behind'); }
+            return;
+        }
+        on = !!on;
+        S.browseOverlay = on;
+        if (on) {
+            closeControls();
+            hideOSD();
+            if (P.closeChannelDrawer) { P.closeChannelDrawer(true); }
+            U.byId('app').className = '';
+            document.body.style.background = 'transparent';
+            if (document.body && document.body.classList) { document.body.classList.add('live-behind'); }
+            if (U.startOledOrbit) { U.startOledOrbit(); }
+        } else {
+            if (document.body && document.body.classList) { document.body.classList.remove('live-behind'); }
+            U.byId('app').className = 'hidden';
+            document.body.style.background = 'transparent';
+            showOSD(true);
+        }
+        emitLiveMeta();
     }
     // An IPTV channel's TV guide (js/epg.js): { now, next } or null.
     function guideNow() { return (typeof EPG !== 'undefined' && S.ctx && /^iptv:/.test(S.ctx.id || '')) ? EPG.now(S.ctx.id) : null; }
@@ -522,13 +616,26 @@ var PlayerParts = {};
         _prefetchedNext = false; S.playStarted = false; S.playing = false;
         _segments = null; _creditsSec = null; _creditsHandled = false; _segmentsFor = null;
         S.buffering = false; S.pendingSeek = null; S.lastSeekAt = 0; S.settleFrom = 0; _seekRecovering = false; _jumpUndone = null; _pausedOnce = false; _pausedSince = 0; _jumpBack = null;
+        _lastTagsText = '';
+        if (_metaPollTimer) { clearTimeout(_metaPollTimer); _metaPollTimer = null; }
+        S.browseOverlay = !!(ctx && ctx.browseOverlay && S.isLive);
         updateHint();
 
-        U.byId('app').className = 'hidden';
-        document.body.style.background = 'transparent';
-        showOSD(true);
+        if (S.browseOverlay) {
+            U.byId('app').className = '';
+            document.body.style.background = 'transparent';
+            if (document.body && document.body.classList) { document.body.classList.add('live-behind'); }
+            hideOSD();
+            if (U.startOledOrbit) { U.startOledOrbit(); }
+        } else {
+            if (document.body && document.body.classList) { document.body.classList.remove('live-behind'); }
+            U.byId('app').className = 'hidden';
+            document.body.style.background = 'transparent';
+            showOSD(true);
+            U.spinner(true, ctx.switching ? U.t('Switching source…') : ctx.initialQualityHeight ? U.t('Opening stream at {height}p…', { height: ctx.initialQualityHeight }) : U.t('Opening stream…'));
+        }
         renderOSD();   // show the NEW title immediately (not the previous item's)
-        U.spinner(true, ctx.switching ? U.t('Switching source…') : ctx.initialQualityHeight ? U.t('Opening stream at {height}p…', { height: ctx.initialQualityHeight }) : U.t('Opening stream…'));
+        emitLiveMeta();
 
         engineFor(ctx);   // (the TV's player, or a ClearKey channel's own: see startShaka)
         // (a TorrServer torrent that doesn't say which of its files: its file list asked for first)
@@ -896,6 +1003,8 @@ var PlayerParts = {};
                 liveCheck();
                 screenSaver(false);
                 renderOSD();
+                emitLiveMeta();
+                scheduleMetaPoll();
                 startTicker();
                 showOSD(false);
             }, function (err) {
@@ -1040,6 +1149,9 @@ var PlayerParts = {};
             try { applyPreferredAudio(); } catch (eA) {}
             if (!S.isLive && S.ctx.resumeSec > 5) { try { S.videoEl.currentTime = S.ctx.resumeSec; } catch (e) {} }
             reportStart(true);
+            renderTags();
+            emitLiveMeta();
+            scheduleMetaPoll();
             U.spinner(false); showOSD(false);
         };
         S.videoEl.ontimeupdate = function () {
@@ -1859,9 +1971,15 @@ var PlayerParts = {};
             S.videoEl.className = '';
         }
         useAV = hasAV; P.useAV = hasAV;   // (the next playback the TV's player's, unless it's ClearKey too)
+        if (_metaPollTimer) { clearTimeout(_metaPollTimer); _metaPollTimer = null; }
+        _lastTagsText = '';
+        S.browseOverlay = false;
+        if (document.body && document.body.classList) { document.body.classList.remove('live-behind'); }
+        if (U.stopOledOrbit) { U.stopOledOrbit(); }
         document.body.style.background = '';
         U.byId('app').className = '';
         U.spinner(false);
+        emitLiveMeta();
         // finished: this playback reached the credits/end (and so marked the item watched)
         var cb = _onExit, finished = _creditsHandled; _onExit = null; S.ctx = null;
         if (cb) { cb({ finished: finished }); }
@@ -1869,6 +1987,8 @@ var PlayerParts = {};
 
     // ----- for the other parts (and js/player.js) -----
     P.init = init; P.isActive = isActive; P.showOSD = showOSD; P.hideOSD = hideOSD; P.renderOSD = renderOSD; P.play = play; P.playLinked = playLinked; P.replaceSource = replaceSource;
+    P.isLivePlaying = isLivePlaying; P.isBrowseOverlay = isBrowseOverlay; P.setBrowseOverlay = setBrowseOverlay; P.currentLiveId = currentLiveId;
+    P.liveMeta = liveMeta; P.onLiveMetaChange = onLiveMetaChange; P.parseFps = parseFps;
     P.updateHint = updateHint; P.startAV = startAV; P.startHTML5 = startHTML5;
     P.handleCredits = handleCredits; P.isPaused = isPaused; P.play_ = play_; P.pause_ = pause_;
     P.sponsorHighlight = sponsorHighlight;

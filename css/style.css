@@ -219,8 +219,11 @@ html, body {
 #osd-scrub.edge-r #osd-scrub-pic { left: auto; right: 0; -webkit-transform: none; transform: none; }
 #osd-times { display: flex; justify-content: space-between; margin-top: 10px; font-size: 20px; color: #cfd3dc; }
 #osd-times .osd-right { display: flex; align-items: center; }
-#osd-tags { font-size: 17px; color: #9aa2b1; margin-right: 18px; letter-spacing: 0.3px; }   /* (what's playing, in short) */
+#osd-tags { display: flex; align-items: center; flex-wrap: nowrap; margin-right: 18px; }   /* (what's playing, in short pills) */
 #osd-tags:empty { display: none; }
+.osd-tag-pill { display: inline-block; font-size: 15px; font-weight: bold; color: #c7d2fe; background: rgba(30, 38, 56, 0.85); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; padding: 3px 9px; margin-right: 7px; letter-spacing: 0.3px; white-space: nowrap; }
+.osd-tag-pill.hi { color: #ffffff; background: rgba(99, 102, 241, 0.42); border-color: rgba(129, 140, 248, 0.65); }
+#player-osd.oled-dim, #player-bar.oled-dim { opacity: 0.35; -webkit-transition: opacity 1.5s ease; transition: opacity 1.5s ease; }
 #osd-cur.live { color: #ff4d4d; font-weight: bold; letter-spacing: 1px; }
 #osd-hint { margin-top: 14px; font-size: 18px; color: #8b93a5; }
 

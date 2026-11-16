@@ -343,7 +343,6 @@ function loadService(extraGlobals) {
  * Returns the sandbox context so IPTV or other browser modules can be called through public API.
  */
 function loadBrowserScript(file, extraGlobals) {
-    const fullPath = path.isAbsolute(file) ? file : path.join(REPO_ROOT, file);
     const storeData = {};
 
     const mockLocalStorage = {
@@ -476,9 +475,13 @@ function loadBrowserScript(file, extraGlobals) {
         Object.assign(sandbox, extraGlobals);
     }
 
+    const files = Array.isArray(file) ? file : [file];
     const ctx = vm.createContext(sandbox);
-    const code = fs.readFileSync(fullPath, 'utf8');
-    vm.runInContext(code, ctx, { filename: fullPath });
+    files.forEach(function (f) {
+        const fullPath = path.isAbsolute(f) ? f : path.join(REPO_ROOT, f);
+        const code = fs.readFileSync(fullPath, 'utf8');
+        vm.runInContext(code, ctx, { filename: fullPath });
+    });
     return ctx;
 }
 
@@ -1314,6 +1317,138 @@ async function run() {
         iptvCtx.IPTV.rebuild();
         assert.strictEqual(listCalls, 1);
         assert.strictEqual(iptvCtx.IPTV.channels().filter((c) => c.name === 'TRT 1').length, 1);
+    });
+
+    await runTest('playerBrowseOverlay & liveMeta (state transitions & FPS parser)', async () => {
+        function makeEl(id, tag) {
+            const clsSet = new Set();
+            const node = {
+                id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
+                children: [], parentNode: null,
+                classList: {
+                    add: function (c) { clsSet.add(c); node.className = Array.from(clsSet).join(' '); },
+                    remove: function (c) { clsSet.delete(c); node.className = Array.from(clsSet).join(' '); },
+                    contains: function (c) { return clsSet.has(c); }
+                },
+                appendChild: function (c) { c.parentNode = node; node.children.push(c); return c; },
+                removeChild: function (c) { const i = node.children.indexOf(c); if (i !== -1) node.children.splice(i, 1); return c; },
+                setAttribute: function () {}, getAttribute: function () { return null; },
+                addEventListener: function () {}, removeEventListener: function () {},
+                pause: function () {}, play: function () { return Promise.resolve(); }, removeAttribute: function () {}, load: function () {},
+                querySelectorAll: function () { return []; }
+            };
+            return node;
+        }
+        const byIdMap = {};
+        ['app', 'av-player', 'html5-player', 'player-osd', 'osd-title', 'osd-clock', 'osd-tags', 'osd-bar', 'osd-buffer', 'osd-progress',
+         'osd-cur', 'osd-dur', 'osd-chapter', 'osd-chapters', 'osd-sponsor', 'osd-scrub', 'osd-scrub-range', 'osd-scrub-time',
+         'osd-scrub-pic', 'osd-hint', 'subs', 'subs2', 'sub-menu', 'player-bar', 'stream-info', 'skip-prompt', 'channel-drawer'].forEach((id) => {
+            byIdMap[id] = makeEl(id, id === 'html5-player' ? 'VIDEO' : 'DIV');
+        });
+        const bodyEl = makeEl('body', 'BODY');
+        let orbitStarted = 0, orbitStopped = 0;
+        const baseCtx = loadBrowserScript('js/iptv.js');
+        const extraU = Object.assign({}, baseCtx.U, {
+            byId: (id) => byIdMap[id] || makeEl(id),
+            el: (tag, cls, txt) => {
+                const n = makeEl('', (tag || 'div').toUpperCase());
+                if (cls) { cls.split(/\s+/).forEach((c) => { if (c) n.classList.add(c); }); }
+                if (txt !== undefined) n.textContent = String(txt);
+                return n;
+            },
+            clear: (n) => { n.children = []; n.textContent = ''; },
+            getText: () => Promise.resolve(''),
+            getJSON: () => Promise.resolve(null),
+            listOf: (x) => Array.isArray(x) ? x : [],
+            fmtTime: () => '0:00',
+            whenVisible: () => {},
+            cancelToken: () => ({ cancelled: false, cancel: function () { this.cancelled = true; } }),
+            crumb: () => {}, zoom: () => 1, fromUTF8: (b) => b, toUTF8: (s) => s, loadScript: () => Promise.resolve(),
+            deferImage: () => {}, cardImage: () => {}, qrCanvas: () => {},
+            toast: () => {},
+            spinner: () => {},
+            startOledOrbit: () => { orbitStarted++; },
+            stopOledOrbit: () => { orbitStopped++; }
+        });
+        const ctx = loadBrowserScript([
+            'js/stremio.js',
+            'js/player-core.js',
+            'js/player-store.js',
+            'js/player-lang.js',
+            'js/player-quality.js',
+            'js/player-subs.js',
+            'js/player-audio.js',
+            'js/player-controls.js',
+            'js/player.js'
+        ], {
+            setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
+            setInterval: (fn, ms) => { const t = setInterval(fn, ms); if (t && t.unref) t.unref(); return t; },
+            U: extraU,
+            document: {
+                body: bodyEl,
+                documentElement: bodyEl,
+                getElementById: (id) => byIdMap[id] || null,
+                createElement: extraU.el,
+                querySelector: () => null,
+                querySelectorAll: (sel) => byIdMap[sel.slice(1)] ? [byIdMap[sel.slice(1)]] : [],
+                addEventListener: () => {},
+                removeEventListener: () => {}
+            }
+        });
+
+        assert.strictEqual(typeof ctx.Player.setBrowseOverlay, 'function');
+        assert.strictEqual(typeof ctx.Player.isBrowseOverlay, 'function');
+        assert.strictEqual(typeof ctx.Player.isLivePlaying, 'function');
+        assert.strictEqual(typeof ctx.Player.liveMeta, 'function');
+        assert.strictEqual(typeof ctx.Player.onLiveMetaChange, 'function');
+        assert.strictEqual(typeof ctx.Player.togglePlay, 'function');
+
+        assert.strictEqual(ctx.PlayerParts.parseFps('50'), 50);
+        assert.strictEqual(ctx.PlayerParts.parseFps('50/1'), 50);
+        assert.strictEqual(ctx.PlayerParts.parseFps('60000/1001'), 59.94);
+        assert.strictEqual(ctx.PlayerParts.parseFps('25.000'), 25);
+        assert.strictEqual(ctx.PlayerParts.parseFps('0'), 0);
+        assert.strictEqual(ctx.PlayerParts.parseFps('bad'), 0);
+
+        let metaUpdates = 0;
+        ctx.Player.onLiveMetaChange(() => { metaUpdates++; });
+
+        ctx.Player.init();
+        ctx.Player.play({
+            url: 'http://stream.example.com/live/1.m3u8',
+            type: 'tv',
+            id: 'iptv:ch1',
+            name: 'TRT 1',
+            isLive: true,
+            browseOverlay: true,
+            fromHome: true
+        });
+        assert.strictEqual(ctx.Player.isLivePlaying(), true);
+        assert.strictEqual(ctx.Player.isBrowseOverlay(), true);
+        assert.strictEqual(ctx.Player.currentLiveId(), 'iptv:ch1');
+        assert.ok(bodyEl.classList.contains('live-behind'), 'body must have live-behind');
+        assert.strictEqual(byIdMap.app.className, '', '#app must remain visible behind glass');
+        assert.ok(byIdMap['player-osd'].className.indexOf('hidden') !== -1, 'OSD stays hidden during browseOverlay');
+
+        ctx.Player.setBrowseOverlay(false);
+        assert.strictEqual(ctx.Player.isBrowseOverlay(), false);
+        assert.ok(!bodyEl.classList.contains('live-behind'));
+        assert.strictEqual(byIdMap.app.className, 'hidden');
+
+        ctx.Player.setBrowseOverlay(true);
+        assert.strictEqual(ctx.Player.isBrowseOverlay(), true);
+        assert.ok(orbitStarted >= 1);
+
+        const snap = ctx.Player.liveMeta();
+        assert.strictEqual(snap.id, 'iptv:ch1');
+        assert.ok(metaUpdates >= 1);
+
+        ctx.Player.exit();
+        assert.strictEqual(ctx.Player.isLivePlaying(), false);
+        assert.strictEqual(ctx.Player.isBrowseOverlay(), false);
+        assert.ok(!bodyEl.classList.contains('live-behind'));
+        assert.strictEqual(byIdMap.app.className, '');
+        assert.ok(orbitStopped >= 1);
     });
 
     console.log('\n===========================');

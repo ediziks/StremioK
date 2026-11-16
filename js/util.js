@@ -1717,6 +1717,45 @@ var U = (function () {
         });
     }
 
+    // ---- OLED Burn-in Pixel Orbit (±2px composite transform across static HUD/glass chrome) ----
+    var OLED_OFFSETS = [[0, 0], [2, 0], [2, 2], [0, 2], [-2, 2], [-2, 0], [-2, -2], [0, -2]];
+    var OLED_SELS = ['#player-osd', '#player-bar', '#stream-info', '#sub-menu', '.iptv-shell', '.guide'];
+    var _oledMode = 'auto', _oledBg = 'dark', _oledTimer = null, _oledStep = 0;
+    function oledEnabled() {
+        if (_oledMode === 'off') { return false; }
+        if (_oledMode === 'on') { return true; }
+        return _oledBg === 'dark' || _oledBg === 'black';
+    }
+    function applyOledStep(x, y) {
+        var val = (x === 0 && y === 0) ? '' : 'translate3d(' + x + 'px, ' + y + 'px, 0)';
+        OLED_SELS.forEach(function (sel) {
+            try {
+                var nodes = document.querySelectorAll(sel);
+                for (var i = 0; i < nodes.length; i++) { nodes[i].style.transform = val; }
+            } catch (e) {}
+        });
+    }
+    function stopOledOrbit() {
+        if (_oledTimer) { clearInterval(_oledTimer); _oledTimer = null; }
+        _oledStep = 0;
+        applyOledStep(0, 0);
+    }
+    function startOledOrbit() {
+        if (!oledEnabled()) { stopOledOrbit(); return; }
+        if (_oledTimer) { return; }
+        _oledTimer = setInterval(function () {
+            if (!oledEnabled()) { stopOledOrbit(); return; }
+            _oledStep = (_oledStep + 1) % OLED_OFFSETS.length;
+            var pt = OLED_OFFSETS[_oledStep];
+            applyOledStep(pt[0], pt[1]);
+        }, 60000);
+    }
+    function setOledShift(mode, bg) {
+        _oledMode = (mode === 'on' || mode === 'off') ? mode : 'auto';
+        if (bg) { _oledBg = bg; }
+        if (!oledEnabled()) { stopOledOrbit(); }
+    }
+
     return {
         byId: byId, el: el, clear: clear, moveIn: moveIn, getJSON: getJSON, getText: getText, getBytes: getBytes,
         postJSON: postJSON, redactUrl: redactUrl, problem: problem, problemDetail: problemDetail, listOf: listOf, lru: lru, randomHex: randomHex, cachedJSON: cachedJSON,
@@ -1727,6 +1766,7 @@ var U = (function () {
         store: store, toast: toast, spinner: spinner,
         deferImage: deferImage, deferBg: deferBg, cardImage: cardImage, prioritizeImages: prioritizeImages, requeueImages: requeueImages,
         fmtTime: fmtTime, dayLabel: dayLabel, settleAll: settleAll, cancelToken: cancelToken, isHidden: isHidden, whenVisible: whenVisible, crumb: crumb, sessionStart: sessionStart, sessionState: sessionState, mark: mark, startupMarks: startupMarks, loadScript: loadScript, qrModules: qrModules, qrCanvas: qrCanvas, qrScale: qrScale,
+        setOledShift: setOledShift, startOledOrbit: startOledOrbit, stopOledOrbit: stopOledOrbit,
         applyTheme: applyTheme, zoom: zoom, setZoom: setZoom, accentColor: accentColor, ACCENT_KEYS: Object.keys(ACCENTS)
     };
 })();
