@@ -5437,7 +5437,7 @@ function xtLiveRecord(o, catMap, base, user, pass, fmt) {
     var id = +o.stream_id;
     var name = String(o.name || '').replace(/\s+/g, ' ').trim().slice(0, 200);
     if (!(id > 0) || !name) { return null; }
-    var cid = String(o.category_id || '');
+    var cid = o.category_id != null ? String(o.category_id).trim() : '';
     var group = (catMap && cid && catMap[cid]) ? String(catMap[cid]).replace(/\s+/g, ' ').trim().slice(0, 120) : 'Live TV';
     var logo = String(o.stream_icon || '');
     if (!/^https?:\/\//i.test(logo) || logo.length >= 600) { logo = ''; }
@@ -5532,7 +5532,7 @@ function xtlControl(req, res, path, query) {
     var fmt = q.fmt === 'hls' ? 'hls' : 'ts';
     var cats = q.cats ? String(q.cats).split(',').map(function (c) { return c.trim(); }).filter(Boolean) : [];
     var catsSorted = cats.slice().sort();
-    var key = base + '|' + user + '|' + fmt + '|' + catsSorted.join(',');
+    var key = base + '|' + user + '|' + epgHash(pass).toString(36) + '|' + fmt + '|' + catsSorted.join(',');
     var force = q.force === '1';
     xtvSweep();
     var x = _xtl[key];
@@ -5569,7 +5569,7 @@ function xtlControl(req, res, path, query) {
             var url = base + '/player_api.php?username=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(pass) + '&action=get_live_streams';
             var feed = xtvItems(function (o) {
                 if (!o || typeof o !== 'object') { return; }
-                if (catSet && !catSet[String(o.category_id || '')]) { return; }
+                if (catSet && !catSet[o.category_id != null ? String(o.category_id).trim() : '']) { return; }
                 if (items.length >= XTV_ITEMS) { dropped++; return; }
                 var r = xtLiveRecord(o, catMap, base, user, pass, fmt);
                 if (r) { items.push(r); groupSet[r.group] = 1; }
@@ -5985,7 +5985,7 @@ function m3uControl(req, res, path, query) {
     if (!x) {
         var keys = Object.keys(_m3u);
         if (keys.length >= M3U_KEEP) { keys.sort(function (a, b) { return _m3u[a].used - _m3u[b].used; }); delete _m3u[keys[0]]; }
-        x = _m3u[u] = { key: u, state: 'new', title: '', guides: [], groups: [], count: 0, dropped: 0, at: 0, items: null, saved: false, stale: false, error: '', waiters: [] };
+        x = _m3u[u] = { key: u, state: 'new', title: '', guides: [], groups: [], count: 0, dropped: 0, at: 0, items: null, saved: false, stale: false, staleAt: 0, error: '', waiters: [] };
     }
     x.used = Date.now();
 
@@ -6024,7 +6024,9 @@ function m3uControl(req, res, path, query) {
         }));
     }
 
-    var ready = (x.saved || x.items) && x.at && Date.now() - x.at <= M3U_FRESH_MS;
+    var fresh = !!(x.at && Date.now() - x.at <= M3U_FRESH_MS);
+    var recentStale = !!(path === '/m3u/channels' && x.stale && x.staleAt && Date.now() - x.staleAt <= 60000);
+    var ready = !!(x.saved || x.items) && (fresh || recentStale);
     if (!force && ready) { reply(null); return; }
     if (x.loading) { x.waiters.push(reply); return; }
     x.loading = true;
@@ -6053,6 +6055,7 @@ function m3uControl(req, res, path, query) {
                 if (x.saved || x.items) {
                     x.state = 'ready';
                     x.stale = true;
+                    x.staleAt = Date.now();
                     x.error = errMsg;
                     finishWaiters(null);
                     return;
@@ -6062,12 +6065,14 @@ function m3uControl(req, res, path, query) {
                         if (meta && meta.at) {
                             applyMeta(meta);
                             x.stale = true;
+                            x.staleAt = Date.now();
                             x.error = errMsg;
                             finishWaiters(null);
                             return;
                         }
                         x.state = 'failed';
                         x.stale = false;
+                        x.staleAt = 0;
                         x.error = errMsg;
                         finishWaiters(err);
                     });
@@ -6075,6 +6080,7 @@ function m3uControl(req, res, path, query) {
                 }
                 x.state = 'failed';
                 x.stale = false;
+                x.staleAt = 0;
                 x.error = errMsg;
                 finishWaiters(err);
                 return;
@@ -6087,6 +6093,7 @@ function m3uControl(req, res, path, query) {
             x.dropped = r.dropped || 0;
             x.state = 'ready';
             x.stale = false;
+            x.staleAt = 0;
             x.error = '';
             x.saved = false;
             if (m3uFile(x.key)) {
@@ -6105,6 +6112,7 @@ function m3uControl(req, res, path, query) {
             if (meta && meta.at && Date.now() - meta.at <= M3U_FRESH_MS) {
                 applyMeta(meta);
                 x.stale = false;
+                x.staleAt = 0;
                 x.error = '';
                 finishWaiters(null);
                 return;

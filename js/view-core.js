@@ -502,13 +502,34 @@ var ViewParts = {};
                 });
             }, function (e) { U.toast(U.problem(e), 5000); });
         };
+        function dedupeGroupItems(list, opts) {
+            var useId = !!(opts && opts.useId);
+            var isStalker = !!(opts && opts.isStalker);
+            var onMap = opts && opts.onMap;
+            var byId = Object.create(null), out = [];
+            (list || []).forEach(function (g) {
+                var id = useId ? String(g.id != null ? g.id : '') : String(g.name || '');
+                var name = isStalker ? String(g.title || g.name || id) : String(g.name || id);
+                var cnt = (typeof g.count === 'number' && g.count > 0) ? g.count : 0;
+                if (!id) { return; }
+                if (byId[id]) {
+                    byId[id].count += cnt;
+                } else {
+                    byId[id] = { id: id, name: name, count: cnt };
+                    if (onMap) { byId[id].on = !!onMap[id]; }
+                    out.push(byId[id]);
+                }
+            });
+            return out;
+        }
         var m3uGroupsBtn = U.el('div', 'pill focusable modal-btn', U.t('Channel groups'));
         m3uGroupsBtn.__onselect = function () {
             closeModal();
             U.toast(U.t('Asking the server for its groups…'), 4000);
             IPTV.m3uGroups(playlist.id).then(function (list) {
-                if (!list.length) { U.toast(U.t('The server lists no groups'), 4000); return; }
-                pickMany(U.t('Groups to read from “{name}”', { name: label }), list.map(function (g) { return { key: g.name, label: g.name + ' (' + g.count + ')' }; }), {
+                var groups = dedupeGroupItems(list);
+                if (!groups.length) { U.toast(U.t('The server lists no groups'), 4000); return; }
+                pickMany(U.t('Groups to read from “{name}”', { name: label }), groups.map(function (g) { return { key: g.id, label: g.name + ' (' + g.count + ')' }; }), {
                     on: playlist.groups, none: true,
                     button: function (n) { return n ? U.tn(n, 'Read {n} group', 'Read {n} groups') : U.t('Read all groups'); }
                 }, function (keys) {
@@ -542,19 +563,7 @@ var ViewParts = {};
                 }
                 var onMap = Object.create(null), active = isStalkerPl ? playlist.genres : playlist.groups;
                 if (Array.isArray(active)) { active.forEach(function (k) { onMap[String(k)] = true; }); }
-                var byId = Object.create(null), payloadGroups = [];
-                list.forEach(function (g) {
-                    var id = (fmt || isStalkerPl) ? String(g.id != null ? g.id : '') : String(g.name || '');
-                    var name = isStalkerPl ? String(g.title || g.name || id) : String(g.name || id);
-                    var cnt = (typeof g.count === 'number' && g.count > 0) ? g.count : 0;
-                    if (!id) { return; }
-                    if (byId[id]) {
-                        byId[id].count += cnt;
-                    } else {
-                        byId[id] = { id: id, name: name, count: cnt, on: !!onMap[id] };
-                        payloadGroups.push(byId[id]);
-                    }
-                });
+                var payloadGroups = dedupeGroupItems(list, { useId: !!(fmt || isStalkerPl), isStalker: isStalkerPl, onMap: onMap });
                 phoneGroups(U.t('Edit groups for “{name}”', { name: label }), { name: label, groups: payloadGroups }, function (keys) {
                     if (isStalkerPl) { IPTV.setStalkerGroups(playlist.id, keys); } else { Stremio.iptvSetPlaylistGroups(playlist.id, keys); }
                     refreshAddonRows('local:iptv');

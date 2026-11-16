@@ -1042,6 +1042,128 @@ async function run() {
         );
     });
 
+    await runTest('xtlControl (category_id 0 & password cache key)', async () => {
+        const svc = loadService();
+        svc.tokenDir = () => null;
+
+        // xtLiveRecord preserves numeric category_id 0
+        const recZero = svc.xtLiveRecord({
+            stream_id: 10,
+            name: 'Zero Cat Channel',
+            category_id: 0
+        }, { '0': 'Uncategorized' }, 'http://tv.example.com:8080', 'alice', 'pass1', 'ts');
+        assert.strictEqual(recZero.group, 'Uncategorized');
+
+        let fetchCount = 0;
+        svc.xtvGet = (url, feed, cb) => {
+            fetchCount++;
+            if (url.includes('action=get_live_categories')) {
+                feed(JSON.stringify([{ category_id: 0, category_name: 'Uncategorized' }, { category_id: 5, category_name: 'Sports' }]));
+                cb(null);
+                return;
+            }
+            feed(JSON.stringify([
+                { stream_id: 10, name: 'Zero Cat Channel', category_id: 0 },
+                { stream_id: 11, name: 'Sports Channel', category_id: 5 }
+            ]));
+            cb(null);
+        };
+
+        function callXtl(pathName, query) {
+            return new Promise((resolve) => {
+                let status = 0;
+                let body = '';
+                const req = { headers: { 'x-stremiok': '1' } };
+                const res = {
+                    writeHead: (s) => { status = s; },
+                    end: (chunk) => {
+                        if (chunk) body += chunk.toString();
+                        resolve({ status, body });
+                    }
+                };
+                svc.xtlControl(req, res, pathName, query);
+            });
+        }
+
+        const r1 = await callXtl('/xtlive/list', 'base=http://tv.example.com:8080&user=alice&pass=pass1&fmt=ts&cats=0');
+        assert.strictEqual(r1.status, 200);
+        const j1 = JSON.parse(r1.body);
+        assert.strictEqual(j1.channels.length, 1);
+        assert.strictEqual(j1.channels[0].id, 10);
+        assert.strictEqual(j1.channels[0].group, 'Uncategorized');
+        assert.strictEqual(j1.channels[0].url, 'http://tv.example.com:8080/live/alice/pass1/10.ts');
+        const fetchesAfterPass1 = fetchCount;
+
+        // Changing password must miss cache and return updated URLs
+        const r2 = await callXtl('/xtlive/list', 'base=http://tv.example.com:8080&user=alice&pass=pass2&fmt=ts&cats=0');
+        assert.strictEqual(r2.status, 200);
+        const j2 = JSON.parse(r2.body);
+        assert.strictEqual(j2.channels.length, 1);
+        assert.strictEqual(j2.channels[0].url, 'http://tv.example.com:8080/live/alice/pass2/10.ts');
+        assert.ok(fetchCount > fetchesAfterPass1, 'password change must trigger fresh fetch');
+        assert.strictEqual(Object.keys(svc._xtl).length, 2);
+    });
+
+    await runTest('m3uControl (>24h stale fallback skips redundant re-fetch on m3uChannels)', async () => {
+        const svc = loadService();
+        svc.tokenDir = () => null;
+        const playlistUrl = 'http://cdn.example.com/list.m3u';
+        svc._m3u[playlistUrl] = {
+            key: playlistUrl,
+            state: 'ready',
+            title: 'Test List',
+            guides: [],
+            groups: [{ name: 'News', count: 1 }],
+            count: 1,
+            dropped: 0,
+            at: Date.now() - 25 * 3600 * 1000,
+            items: [{ name: 'Ch 1', url: 'http://cdn.example.com/1.ts', group: 'News', logo: '', tvgId: '' }],
+            saved: false,
+            stale: false,
+            staleAt: 0,
+            error: '',
+            waiters: []
+        };
+
+        let fetchCount = 0;
+        svc.m3uFetch = (u, cb) => {
+            fetchCount++;
+            setImmediate(() => cb(new Error('network timeout')));
+        };
+
+        function callM3u(pathName, query) {
+            return new Promise((resolve) => {
+                let status = 0;
+                let body = '';
+                const req = { headers: { 'x-stremiok': '1' } };
+                const res = {
+                    writeHead: (s) => { status = s; },
+                    end: (chunk) => {
+                        if (chunk) body += chunk.toString();
+                        resolve({ status, body });
+                    }
+                };
+                svc.m3uControl(req, res, pathName, query);
+            });
+        }
+
+        const loadRes = await callM3u('/m3u/load', 'u=' + encodeURIComponent(playlistUrl) + '&force=1');
+        assert.strictEqual(loadRes.status, 200);
+        const loadJson = JSON.parse(loadRes.body);
+        assert.strictEqual(loadJson.state, 'ready');
+        assert.strictEqual(loadJson.stale, true);
+        assert.strictEqual(fetchCount, 1);
+        assert.ok(svc._m3u[playlistUrl].staleAt > 0, 'staleAt must be recorded');
+
+        // Immediate m3uChannels without force=1 must serve stale fallback without re-fetching
+        const chRes = await callM3u('/m3u/channels', 'u=' + encodeURIComponent(playlistUrl));
+        assert.strictEqual(chRes.status, 200);
+        const chJson = JSON.parse(chRes.body);
+        assert.strictEqual(chJson.channels.length, 1);
+        assert.strictEqual(chJson.channels[0].name, 'Ch 1');
+        assert.strictEqual(fetchCount, 1);
+    });
+
     console.log('\n===========================');
     console.log(`Summary: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 
