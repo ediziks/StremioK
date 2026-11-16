@@ -1454,9 +1454,13 @@ async function run() {
     await runTest('viewIptv windowing (2000 channels render <= 10 DOM rows & <= 11 categories)', async () => {
         const makeEl = (id, tag) => {
             const clsSet = new Set();
+            const attrs = {};
             const node = {
                 id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '',
                 children: [], parentNode: null, listeners: {},
+                setAttribute: (k, v) => { attrs[k] = String(v); },
+                getAttribute: (k) => Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null,
+                contains: (other) => other === node || node.children.some((c) => c.contains && c.contains(other)),
                 classList: {
                     add: (c) => { clsSet.add(c); node.className = Array.from(clsSet).join(' '); },
                     remove: (c) => { clsSet.delete(c); node.className = Array.from(clsSet).join(' '); },

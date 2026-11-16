@@ -39,6 +39,7 @@
         digitTimer: null,
         catDebounce: null,
         epgTimer: null,
+        inspTimer: null,
         catNodes: [],
         chanNodes: [],
         unsubLive: null,
@@ -154,6 +155,8 @@
     function updateMiniHud() {
         var hud = _st.hudEl;
         if (!hud) { return; }
+        var cur = Focus.current();
+        var restoreTb = (cur && hud.contains(cur) && cur.getAttribute) ? cur.getAttribute('data-tb') : '';
         U.clear(hud);
         if (typeof Player === 'undefined' || !Player.isLivePlaying || !Player.isLivePlaying()) {
             hud.className = 'iptv-hud hidden';
@@ -170,12 +173,18 @@
             hud.appendChild(U.el('span', 'iptv-hud-tags', meta.tags));
         }
         var fullBtn = U.el('div', 'iptv-chip focusable', '⛶ ' + U.t('Fullscreen'));
+        fullBtn.setAttribute('data-tb', 'hud-full');
         fullBtn.__onselect = function () { if (Player.setBrowseOverlay) { Player.setBrowseOverlay(false); } };
         var stopBtn = U.el('div', 'iptv-chip iptv-chip-stop focusable', '⏹ ' + U.t('Stop'));
+        stopBtn.setAttribute('data-tb', 'hud-stop');
         stopBtn.__onselect = function () { Player.exit(); redrawAll(); };
         hud.appendChild(fullBtn);
         hud.appendChild(stopBtn);
         wireToolbarNav();
+        if (restoreTb) {
+            var target = (restoreTb === 'hud-stop') ? stopBtn : fullBtn;
+            Focus.setFocus(target);
+        }
     }
 
     function wireToolbarNav() {
@@ -198,6 +207,7 @@
         var left = U.el('div', 'iptv-tb-left');
 
         var filterBtn = U.el('div', 'iptv-chip focusable', _st.filterText ? ('🔍 ' + _st.filterText + ' ✕') : ('🔍 ' + U.t('Filter')));
+        filterBtn.setAttribute('data-tb', 'filter');
         filterBtn.__onselect = function () {
             if (_st.filterText) {
                 _st.filterText = '';
@@ -221,13 +231,14 @@
         var cfg = (typeof IPTV !== 'undefined' && IPTV.getTidyCfg) ? IPTV.getTidyCfg() : { enabled: true, countries: ['TR', 'UK', 'NL'] };
         var countryHint = cfg.countries && cfg.countries.length ? (' · ' + cfg.countries.join('/')) : '';
         var tidyBtn = U.el('div', 'iptv-chip focusable' + (cfg.enabled ? ' on' : ''), cfg.enabled ? ('✨ ' + U.t('Tidied') + countryHint) : U.t('Raw list'));
+        tidyBtn.setAttribute('data-tb', 'tidy');
         tidyBtn.__onselect = function () {
             if (typeof IPTV === 'undefined' || !IPTV.setTidyCfg) { return; }
             var curId = (_st.chans[_st.chanIdx] && _st.chans[_st.chanIdx].id) || '';
             IPTV.setTidyCfg({ enabled: !cfg.enabled });
             IPTV.rebuild();
             refreshAddonRows('local:iptv');
-            redrawData(false, curId);
+            redrawData(false, curId, 'tidy');
         };
         left.appendChild(tidyBtn);
 
@@ -236,6 +247,7 @@
             for (var i = 0; i < _st.cats.length; i++) { if (_st.cats[i].key === k) { grp = _st.cats[i]; break; } }
             if (!grp) { return; }
             var btn = U.el('div', 'iptv-chip focusable' + (_st.grpKey === k ? ' on' : ''), grp.label + ' (' + grp.list.length + ')');
+            btn.setAttribute('data-tb', k);
             btn.__onselect = function () { setActiveGroup(k, true); };
             left.appendChild(btn);
         });
@@ -354,7 +366,9 @@
             if (node.__chan) { updateRowEpg(node, node.__chan); }
         });
         var cur = _st.chans[_st.chanIdx];
-        if (cur) { renderInspector(cur); }
+        var cf = Focus.current();
+        var actKey = (cf && _st.paneInspEl && _st.paneInspEl.contains(cf) && cf.getAttribute) ? cf.getAttribute('data-act') : '';
+        if (cur) { renderInspector(cur, actKey); }
     }
 
     function openSourcesModal(ch) {
@@ -444,9 +458,10 @@
         }
     }
 
-    function renderInspector(ch) {
+    function renderInspector(ch, focusActKey) {
         var host = _st.paneInspEl;
         if (!host) { return; }
+        if (_st.inspTimer) { clearTimeout(_st.inspTimer); _st.inspTimer = null; }
         U.clear(host);
         if (!ch) {
             host.appendChild(U.el('div', 'iptv-insp-empty', U.t('Select a channel to inspect EPG & sources.')));
@@ -474,45 +489,49 @@
         var actions = U.el('div', 'iptv-insp-actions');
         var playingHere = isChannelPlaying(ch);
         var playBtn = U.el('div', 'iptv-act-btn primary focusable', playingHere ? ('⛶ ' + U.t('Fullscreen')) : ('▶ ' + U.t('Watch')));
+        playBtn.setAttribute('data-act', 'play');
         playBtn.__onselect = function () { tuneChannel(ch, _st.chanIdx, false); };
 
         var fav = typeof IPTV !== 'undefined' && IPTV.isFavorite && IPTV.isFavorite(ch.id);
         var favBtn = U.el('div', 'iptv-act-btn focusable', fav ? ('★ ' + U.t('Favorited')) : ('☆ ' + U.t('Favorite')));
+        favBtn.setAttribute('data-act', 'fav');
         favBtn.__onselect = function () {
             IPTV.setFavorite(ch.id, !fav);
             refreshAddonRows('local:iptv');
-            renderInspector(ch);
-            _st.chanNodes.forEach(function (n) {
-                if (n.__chan && n.__chan.id === ch.id) {
-                    var b = n.querySelector('.iptv-fav-mark');
-                    if (b) { b.style.display = !fav ? '' : 'none'; }
-                }
-            });
+            redrawData(false, ch.id, null, 'fav');
         };
         actions.appendChild(playBtn);
         actions.appendChild(favBtn);
 
         if (ch.variants && ch.variants.length > 1) {
             var srcBtn = U.el('div', 'iptv-act-btn focusable', '🔀 ' + U.t('Sources') + ' (' + ch.variants.length + ')');
+            srcBtn.setAttribute('data-act', 'sources');
             srcBtn.__onselect = function () { openSourcesModal(ch); };
             actions.appendChild(srcBtn);
         }
         if (ch.archive && ch.archiveDays > 0) {
             var cuBtn = U.el('div', 'iptv-act-btn focusable', '↺ ' + U.t('Catch-up'));
+            cuBtn.setAttribute('data-act', 'catchup');
             cuBtn.__onselect = function () { openCatchupModal(ch); };
             actions.appendChild(cuBtn);
         }
         host.appendChild(actions);
 
         var btns = actions.querySelectorAll('.iptv-act-btn.focusable');
+        var restoreBtn = null;
         for (var i = 0; i < btns.length; i++) {
             (function (bIdx, btn) {
-                btn.__goUP = function () { return bIdx > 0 ? btns[bIdx - 1] : (_st.toolbarFirstEl || undefined); };
-                btn.__goDOWN = function () { return bIdx < btns.length - 1 ? btns[bIdx + 1] : false; };
-                btn.__goLEFT = function () { return _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0] || false; };
-                btn.__goRIGHT = function () { return false; };
+                if (focusActKey && btn.getAttribute && btn.getAttribute('data-act') === focusActKey) { restoreBtn = btn; }
+                btn.__goUP = function () { return _st.toolbarFirstEl || undefined; };
+                btn.__goDOWN = function () { return false; };
+                btn.__goLEFT = function () {
+                    if (bIdx > 0) { return btns[bIdx - 1]; }
+                    return _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0] || false;
+                };
+                btn.__goRIGHT = function () { return bIdx < btns.length - 1 ? btns[bIdx + 1] : false; };
             })(i, btns[i]);
         }
+        if (restoreBtn) { Focus.setFocus(restoreBtn); }
 
         // Now & Up Next EPG section
         var epgBox = U.el('div', 'iptv-insp-epg');
@@ -545,22 +564,26 @@
         host.appendChild(epgBox);
 
         if (typeof EPG !== 'undefined' && EPG.schedule && EPG.hasGuide && EPG.hasGuide(ch.id)) {
-            Promise.resolve(EPG.schedule(ch.id)).then(function (list) {
+            _st.inspTimer = setTimeout(function () {
+                _st.inspTimer = null;
                 if (!_st.mounted || !document.documentElement.contains(nextWrap)) { return; }
-                var curSel = _st.chans[_st.chanIdx];
-                if (!curSel || curSel.id !== ch.id) { return; }
-                var nowSec = Date.now() / 1000;
-                var upcoming = (Array.isArray(list) ? list : []).filter(function (p) { return p.start > nowSec; }).slice(0, 3);
-                if (!upcoming.length) { return; }
-                U.clear(nextWrap);
-                nextWrap.appendChild(U.el('div', 'iptv-epg-kicker iptv-next-kicker', U.t('UP NEXT')));
-                upcoming.forEach(function (u) {
-                    var item = U.el('div', 'iptv-next-item');
-                    item.appendChild(U.el('span', 'iptv-next-time', hhmm(u.start)));
-                    item.appendChild(U.el('span', 'iptv-next-title', u.title));
-                    nextWrap.appendChild(item);
-                });
-            }, function () {});
+                Promise.resolve(EPG.schedule(ch.id)).then(function (list) {
+                    if (!_st.mounted || !document.documentElement.contains(nextWrap)) { return; }
+                    var curSel = _st.chans[_st.chanIdx];
+                    if (!curSel || curSel.id !== ch.id) { return; }
+                    var nowSec = Date.now() / 1000;
+                    var upcoming = (Array.isArray(list) ? list : []).filter(function (p) { return p.start > nowSec; }).slice(0, 3);
+                    if (!upcoming.length) { return; }
+                    U.clear(nextWrap);
+                    nextWrap.appendChild(U.el('div', 'iptv-epg-kicker iptv-next-kicker', U.t('UP NEXT')));
+                    upcoming.forEach(function (u) {
+                        var item = U.el('div', 'iptv-next-item');
+                        item.appendChild(U.el('span', 'iptv-next-time', hhmm(u.start)));
+                        item.appendChild(U.el('span', 'iptv-next-title', u.title));
+                        nextWrap.appendChild(item);
+                    });
+                }, function () {});
+            }, 90);
         }
     }
 
@@ -680,7 +703,7 @@
         if (focusHere && focusTarget) { Focus.setFocus(focusTarget); }
     }
 
-    function redrawData(focusCenter, keepId) {
+    function redrawData(focusCenter, keepId, focusTbKey, focusActKey) {
         var built = buildGroups(_st.filterText);
         _st.cats = built.groups;
         var hasKey = _st.cats.some(function (g) { return g.key === _st.grpKey; });
@@ -700,10 +723,10 @@
         _st.chanIdx = Math.max(0, Math.min(_st.chanIdx, Math.max(0, _st.chans.length - 1)));
         _st.winTop = Math.max(0, Math.min(_st.chanIdx - Math.floor(CHAN_ROWS / 2), Math.max(0, _st.chans.length - CHAN_ROWS)));
         for (var j = 0; j < _st.cats.length; j++) { if (_st.cats[j].key === _st.grpKey) { _st.catIdx = j; break; } }
-        redrawAll(focusCenter);
+        redrawAll(focusCenter, focusTbKey, focusActKey);
     }
 
-    function redrawAll(focusCenter) {
+    function redrawAll(focusCenter, focusTbKey, focusActKey) {
         if (!_st.wrap) { return; }
         U.clear(_st.wrap);
         var shell = U.el('div', 'iptv-shell');
@@ -728,7 +751,14 @@
         _st.wrap.appendChild(shell);
         wireToolbarNav();
         renderCatsWindow(false);
-        renderChansWindow(true, !!focusCenter);
+        renderChansWindow(true, !!focusCenter && !focusTbKey && !focusActKey);
+        if (focusActKey && _st.paneInspEl) {
+            var actEl = _st.paneInspEl.querySelector('[data-act="' + focusActKey + '"]');
+            if (actEl) { Focus.setFocus(actEl); }
+        } else if (focusTbKey) {
+            var tbEl = shell.querySelector('[data-tb="' + focusTbKey + '"]');
+            if (tbEl) { Focus.setFocus(tbEl); }
+        }
     }
 
     function iptvBrowser(rowsEl) {
@@ -756,6 +786,7 @@
         _st.mounted = false;
         if (_st.catDebounce) { clearTimeout(_st.catDebounce); _st.catDebounce = null; }
         if (_st.epgTimer) { clearTimeout(_st.epgTimer); _st.epgTimer = null; }
+        if (_st.inspTimer) { clearTimeout(_st.inspTimer); _st.inspTimer = null; }
         if (_st.digitTimer) { clearTimeout(_st.digitTimer); _st.digitTimer = null; }
         if (_st.unsubLive) { _st.unsubLive(); _st.unsubLive = null; }
     }
