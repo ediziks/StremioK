@@ -395,13 +395,34 @@ function loadBrowserScript(file, extraGlobals) {
         sanitizeHeaders: function (h) { return h || {}; },
         t: function (s) { return s; },
         tn: function (s) { return s; },
-        settleAll: function (promises) {
-            return Promise.all((promises || []).map(function (p) {
-                return Promise.resolve(p).then(
-                    function (v) { return { status: 'fulfilled', value: v }; },
-                    function (e) { return { status: 'rejected', reason: e }; }
-                );
-            }));
+        settleAll: function (tasks, concurrency) {
+            concurrency = concurrency || 4;
+            tasks = tasks || [];
+            return new Promise(function (resolve) {
+                var results = new Array(tasks.length);
+                var idx = 0, active = 0, finished = 0;
+                if (tasks.length === 0) { resolve(results); return; }
+                function launch() {
+                    while (active < concurrency && idx < tasks.length) {
+                        (function (i) {
+                            active++;
+                            var p;
+                            try { p = Promise.resolve(tasks[i]()); } catch (e0) { p = Promise.reject(e0); }
+                            p.then(function (v) {
+                                results[i] = { ok: true, value: v };
+                            }, function (e) {
+                                results[i] = { ok: false, error: e };
+                            }).then(function () {
+                                active--; finished++;
+                                if (finished === tasks.length) { resolve(results); }
+                                else { launch(); }
+                            });
+                        })(idx);
+                        idx++;
+                    }
+                }
+                launch();
+            });
         }
     };
 
@@ -434,15 +455,15 @@ function loadBrowserScript(file, extraGlobals) {
     return ctx;
 }
 
-function run() {
+async function run() {
     console.log('=== StremioK Test Suite ===\n');
 
     let passed = 0;
     let failed = 0;
 
-    function runTest(name, fn) {
+    async function runTest(name, fn) {
         try {
-            fn();
+            await fn();
             console.log(`[PASS] ${name}`);
             passed++;
         } catch (err) {
@@ -452,7 +473,7 @@ function run() {
     }
 
     // 1. ES5 syntax & vm.Script guard
-    runTest('ES5 syntax guard (scan js/*.js & service/*.js)', () => {
+    await runTest('ES5 syntax guard (scan js/*.js & service/*.js)', () => {
         const { files, errors } = scanES5();
         if (errors.length > 0) {
             const details = errors.map(e => `  ${e.file}:${e.line} - ${e.reason}`).join('\n');
@@ -461,20 +482,41 @@ function run() {
         assert.ok(files.length > 0, 'No files were scanned');
     });
 
-    // 2. Placeholder unit tests (failing with 'not implemented' until implemented in Tasks 2-5)
-    runTest('xtLiveUrl (Xtream Live URL builder)', () => {
+    // 2. Harness helper self-checks
+    await runTest('mockU.settleAll (task execution & result shape)', async () => {
+        const ctx = loadBrowserScript('js/iptv.js');
+        const order = [];
+        const tasks = [
+            () => { order.push(1); return Promise.resolve('val1'); },
+            () => { order.push(2); return 'val2'; },
+            () => { order.push(3); throw new Error('err3'); },
+            () => { order.push(4); return Promise.reject(new Error('err4')); }
+        ];
+        const results = await ctx.U.settleAll(tasks, 2);
+        assert.deepStrictEqual(order, [1, 2, 3, 4]);
+        assert.strictEqual(results.length, 4);
+        assert.deepStrictEqual(results[0], { ok: true, value: 'val1' });
+        assert.deepStrictEqual(results[1], { ok: true, value: 'val2' });
+        assert.strictEqual(results[2].ok, false);
+        assert.strictEqual(results[2].error.message, 'err3');
+        assert.strictEqual(results[3].ok, false);
+        assert.strictEqual(results[3].error.message, 'err4');
+    });
+
+    // 3. Placeholder unit tests (failing with 'not implemented' until implemented in Tasks 2-5)
+    await runTest('xtLiveUrl (Xtream Live URL builder)', () => {
         assert.fail('not implemented');
     });
 
-    runTest('catchupUrl (Xtream Catch-Up URL formatter)', () => {
+    await runTest('catchupUrl (Xtream Catch-Up URL formatter)', () => {
         assert.fail('not implemented');
     });
 
-    runTest('m3uStreamParser (Streaming chunked M3U parser)', () => {
+    await runTest('m3uStreamParser (Streaming chunked M3U parser)', () => {
         assert.fail('not implemented');
     });
 
-    runTest('escHtml (Phone QR group name HTML escaping)', () => {
+    await runTest('escHtml (Phone QR group name HTML escaping)', () => {
         assert.fail('not implemented');
     });
 
