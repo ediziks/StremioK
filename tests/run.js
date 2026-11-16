@@ -1202,6 +1202,120 @@ async function run() {
         assert.strictEqual(plain, '1080p · H.264 · AAC · MKV');
     });
 
+    await runTest('iptvTidy (separators, adult filter, TR/UK/NL boost, variant collapse & favorites)', async () => {
+        const fakeChannels = [
+            { stream_id: '1', name: '--- === SEPARATOR === ---', category_id: '1' },
+            { stream_id: '2', name: '|||||', category_id: '1' },
+            { stream_id: '3', name: 'US: FOX HD', category_id: '2' },
+            { stream_id: '4', name: 'Playboy 18+ HD', category_id: '3' },
+            { stream_id: '5', name: 'Channel 18 HD', category_id: '2' },
+            { stream_id: '6', name: 'Channel 4 HD', category_id: '4' },
+            { stream_id: '7', name: 'Channel 4 +1 HD', category_id: '4' },
+            { stream_id: '8', name: '*** TRT 1 Backup ***', category_id: '5' },
+            { stream_id: '9', name: 'TR | TRT 1 SD', category_id: '5' },
+            { stream_id: '10', name: 'TR | TRT 1 HEVC', category_id: '5' },
+            { stream_id: '11', name: 'TR | TRT 1 FHD', category_id: '5', tv_archive: 1, tv_archive_duration: 7 },
+            { stream_id: '12', name: 'TR | TRT 1 4K UHD', category_id: '6' },
+            { stream_id: '13', name: 'TR | FOX HD', category_id: '5' },
+            { stream_id: '14', name: 'NL | NPO 1 FHD', category_id: '7' },
+            { stream_id: '15', name: 'Show TV Ü HD', category_id: '5' }
+        ];
+        const fakeGroups = {
+            '1': 'DE | Info',
+            '2': 'US | Entertainment',
+            '3': 'XXX Adult 18+',
+            '4': 'UK | Entertainment',
+            '5': 'TR | ✦ ULUSAL VIP ✦',
+            '6': 'TR | 4K UHD',
+            '7': 'NL | Live'
+        };
+        const svc = loadService();
+        let listCalls = 0;
+        const recs = fakeChannels.map((c) => Object.assign({}, svc.xtLiveRecord(c, fakeGroups, 'http://host:8080', 'user', 'pass', 'ts'), {
+            url: 'http://host:8080/live/user/pass/' + c.stream_id + '.ts'
+        }));
+        const iptvCtx = loadBrowserScript('js/iptv.js', {
+            Date: Date,
+            YTPlay: {
+                installMode: () => 'service',
+                xtliveList: () => {
+                    listCalls++;
+                    return Promise.resolve({ state: 'ready', at: Date.now(), count: recs.length, groups: 7, dropped: 0, channels: recs });
+                }
+            }
+        });
+
+        const pid = iptvCtx.IPTV.addXtream('http://host:8080', 'user', 'pass');
+        assert.ok(pid);
+        assert.strictEqual(typeof iptvCtx.IPTV.getTidyCfg, 'function');
+        await iptvCtx.IPTV.load(true);
+        assert.strictEqual(listCalls, 1);
+
+        // Clean tidied view
+        const tidied = iptvCtx.IPTV.channels();
+        const names = tidied.map((c) => c.name);
+        // Separators and Adult removed, Channel 18 preserved, bordered TRT 1 preserved/collapsed
+        assert.ok(!names.some((n) => n.indexOf('SEPARATOR') !== -1 || n === '|||||'), 'Separators must be dropped');
+        assert.ok(!names.some((n) => /Playboy/i.test(n)), 'Adult 18+ must be hidden');
+        assert.ok(names.indexOf('Channel 18') !== -1, 'Channel 18 must NOT be falsely filtered as adult');
+
+        // +1 timeshift kept distinct
+        assert.ok(names.indexOf('Channel 4') !== -1);
+        assert.ok(names.indexOf('Channel 4 +1') !== -1);
+
+        // Turkish Unicode kept distinct
+        assert.ok(names.indexOf('Show TV Ü') !== -1, 'Expected Show TV Ü in ' + JSON.stringify(names));
+
+        // Cross-country FOX (TR vs US) NOT merged
+        const foxes = tidied.filter((c) => c.name === 'FOX');
+        assert.strictEqual(foxes.length, 2, 'TR and US FOX must stay distinct');
+
+        // TRT 1 variants collapsed cleanly into ONE channel sorted 4K > FHD > HEVC > SD > Backup
+        const trtList = tidied.filter((c) => c.name === 'TRT 1');
+        assert.strictEqual(trtList.length, 1, 'Expected 1 merged TRT 1, got ' + trtList.length);
+        const trt = trtList[0];
+        assert.strictEqual(trt.variants.length, 5);
+        assert.ok(trt.variants[0].badge.indexOf('4K') !== -1, 'Best variant must be 4K first');
+        assert.ok(trt.variants[1].badge.indexOf('FHD') !== -1, '2nd variant must be FHD');
+        assert.ok(trt.variants[2].badge.indexOf('HEVC') !== -1, '3rd variant must be HEVC');
+        assert.ok(trt.variants[4].badge.indexOf('Backup') !== -1, 'Backup variant must be last');
+
+        // Merged channel streams() exposes ordered multi-source list
+        const trtStreams = await iptvCtx.IPTV.streams(trt.id);
+        assert.strictEqual(trtStreams.length, 5);
+        assert.ok(trtStreams[0].url.endsWith('/12.ts'));
+        assert.ok(trtStreams[4].url.endsWith('/8.ts'));
+
+        // Archive variant inheritance allows catch-up on merged channel even if 4K variant lacks tv_archive
+        assert.strictEqual(trt.archive, true);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const cuUrl = iptvCtx.IPTV.catchupUrl(trt.id, nowSec - 7200, nowSec - 3600);
+        assert.ok(cuUrl.indexOf('/11.ts') !== -1, 'Expected catchup on archive variant 11, got: ' + cuUrl);
+
+        // Preferred Country order: TR before UK before NL before US
+        const firstCountryOf = (countryCode) => tidied.findIndex((c) => c._country === countryCode);
+        assert.ok(firstCountryOf('TR') < firstCountryOf('UK'));
+        assert.ok(firstCountryOf('UK') < firstCountryOf('NL'));
+        assert.ok(firstCountryOf('NL') < firstCountryOf('US'));
+
+        // Favorite on sub-variant preserves across Tidy <-> Raw rebuild with zero extra fetch
+        const sdVariantId = trt.variants[3].id;
+        iptvCtx.IPTV.setFavorite(sdVariantId, true);
+        assert.strictEqual(iptvCtx.IPTV.isFavorite(trt.id), true, 'Merged channel must reflect favorited variant');
+
+        iptvCtx.IPTV.setTidyCfg({ enabled: false });
+        iptvCtx.IPTV.rebuild();
+        assert.strictEqual(listCalls, 1, 'rebuild() must not trigger network fetch');
+        assert.strictEqual(iptvCtx.IPTV.channels().length, 15, 'Raw mode exposes all 15 channels');
+        assert.strictEqual(iptvCtx.IPTV.isFavorite(sdVariantId), true);
+
+        // Toggle back to Tidied
+        iptvCtx.IPTV.setTidyCfg({ enabled: true });
+        iptvCtx.IPTV.rebuild();
+        assert.strictEqual(listCalls, 1);
+        assert.strictEqual(iptvCtx.IPTV.channels().filter((c) => c.name === 'TRT 1').length, 1);
+    });
+
     console.log('\n===========================');
     console.log(`Summary: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 

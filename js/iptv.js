@@ -12,7 +12,9 @@ var IPTV = (function () {
 
     var PLAYLISTS_KEY = 'stremiok.iptv.playlists';
     var CACHE_PREFIX = 'stremiok.iptv.cache.';       // one key per playlist id
-    var _cache = null;   // merged { ts, channels, groups, byId, byGroup, catalogs }
+    var PREFS_KEY = 'stremiok.prefs';                // canonical Settings prefs key shared with Stremio.getPrefs()
+    var _cache = null;        // active view { ts, channels, groups, byId, byGroup, catalogs }
+    var _rawChannels = null;  // raw merged playlist list before tidying/collapsing (enables instant Tidy <-> Raw toggle)
     // A playlist is downloaded up to playlistMax() and kept to maxChannels() channels: bigger
     // ones would exhaust an older TV's memory (both show in Settings > IPTV when they apply).
     // Settings › Content › IPTV › Largest playlist: 20 MB (30,000 channels) unless raised, the
@@ -242,12 +244,14 @@ var IPTV = (function () {
     function pad2(n) { return (n < 10 ? '0' : '') + n; }
     function catchupUrl(channelId, progStartSec, progStopSec) {
         var c = _cache && _cache.byId ? _cache.byId[channelId] : null;
-        if (!c || !c.archive || !(c.archiveDays > 0) || !c.streamId) { return ''; }
+        if (!c) { return ''; }
+        var arch = c._archiveVariant || c;
+        if (!arch || !arch.archive || !(arch.archiveDays > 0) || !arch.streamId) { return ''; }
         var start = +progStartSec, stop = +progStopSec;
         if (!isFinite(start) || !isFinite(stop) || start <= 0 || stop <= start) { return ''; }
         var now = Date.now() / 1000;
-        if (stop > now || start < now - c.archiveDays * 86400) { return ''; }
-        var list = getPlaylists(), i = find(list, c._playlistId), pl = i !== -1 ? list[i] : null;
+        if (stop > now || start < now - arch.archiveDays * 86400) { return ''; }
+        var list = getPlaylists(), i = find(list, arch._playlistId), pl = i !== -1 ? list[i] : null;
         if (!pl || !isXtream(pl.url)) { return ''; }
         var x = xtreamParts(pl.url);
         if (!x || !x.base || !x.user || !x.pass) { return ''; }
@@ -258,7 +262,7 @@ var IPTV = (function () {
         var stamp = d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) +
             ':' + pad2(d.getUTCHours()) + '-' + pad2(d.getUTCMinutes());
         return x.base + '/timeshift/' + encodeURIComponent(x.user) + '/' + encodeURIComponent(x.pass) +
-            '/' + durationMin + '/' + stamp + '/' + c.streamId + '.' + fmt;
+            '/' + durationMin + '/' + stamp + '/' + arch.streamId + '.' + fmt;
     }
     function m3uGroups(id) {
         var list = getPlaylists(), i = find(list, id);
@@ -361,7 +365,7 @@ var IPTV = (function () {
     // The playlists' revision: changed (added, edited, removed, switched off, moved, reloaded),
     // a load still under way for the old ones keeps nothing, and they're read as they are now.
     var _rev = 0, _pending = null, _ytEnds = {};   // (_ytEnds: Xtream link -> where it led, youTubeEnd)
-    function reset() { _cache = null; _rev++; _ytEnds = {}; }
+    function reset() { _cache = null; _rawChannels = null; _rev++; _ytEnds = {}; }
 
     // Playlist text is cached per playlist (one key each), in the big store (IndexedDB:
     // far more room than localStorage, which keeps settings and progress). A playlist that
@@ -597,9 +601,25 @@ var IPTV = (function () {
     // Guide tab; by channel id (its playlist and tvg-id / name), FAV_MAX at most.
     var FAV_KEY = 'stremiok.iptv.favs', FAV_MAX = 300, FAV_CAT = 'iptv_favs';
     function favs() { var f = U.store.get(FAV_KEY, []) || []; return Array.isArray(f) ? f.filter(function (x) { return typeof x === 'string'; }) : []; }
-    function isFavorite(id) { return favs().indexOf(id) !== -1; }
+    function isFavorite(id) {
+        var f = favs();
+        if (f.indexOf(id) !== -1) { return true; }
+        var c = _cache && _cache.byId ? _cache.byId[id] : null;
+        if (c && c._mergedIds) {
+            for (var i = 0; i < c._mergedIds.length; i++) {
+                if (f.indexOf(c._mergedIds[i]) !== -1) { return true; }
+            }
+        }
+        return false;
+    }
     function setFavorite(id, on) {
-        var f = favs().filter(function (x) { return x !== id; });
+        var c = _cache && _cache.byId ? _cache.byId[id] : null;
+        var drop = {};
+        drop[id] = 1;
+        if (c && c._mergedIds) {
+            c._mergedIds.forEach(function (mid) { drop[mid] = 1; });
+        }
+        var f = favs().filter(function (x) { return !drop[x]; });
         if (on) { f.unshift(id); }
         U.store.set(FAV_KEY, f.slice(0, FAV_MAX));
         if (_cache) { favCatalog(_cache); }
@@ -614,10 +634,266 @@ var IPTV = (function () {
         if (any && at === -1) { d.catalogs.unshift({ type: 'tv', id: FAV_CAT, name: U.t('★ Favorites'), extra: [{ name: 'search' }], _favs: true, _first: true }); }
         if (!any && at !== -1) { d.catalogs.splice(at, 1); }
     }
+
+    // ---- Smart Playlist Tidier & Variant Merger ----
+    function normalizeCountryList(val) {
+        if (val === undefined || val === null) { return ['TR', 'UK', 'NL']; }
+        if (Array.isArray(val)) { val = val.join(','); }
+        var out = [], seen = {};
+        String(val).split(/[\s,;]+/).forEach(function (tok) {
+            var c = tok.trim().toUpperCase();
+            if (/^[A-Z]{2}$/.test(c) && !seen[c] && out.length < 8) { seen[c] = 1; out.push(c); }
+        });
+        return out;
+    }
+    function getTidyCfg() {
+        var p = (typeof Stremio !== 'undefined' && Stremio.getPrefs) ? Stremio.getPrefs() : (U.store.get(PREFS_KEY, {}) || {});
+        return {
+            enabled: p.iptvTidy !== false,
+            hideAdult: p.iptvHideAdult !== false,
+            collapseVariants: p.iptvCollapseVariants !== false,
+            countries: normalizeCountryList(p.iptvCountries)
+        };
+    }
+    function setTidyCfg(patch) {
+        patch = patch || {};
+        var map = { enabled: 'iptvTidy', hideAdult: 'iptvHideAdult', collapseVariants: 'iptvCollapseVariants', countries: 'iptvCountries' };
+        var useStremio = typeof Stremio !== 'undefined' && Stremio.setPref;
+        var p = useStremio ? null : (U.store.get(PREFS_KEY, {}) || {});
+        Object.keys(patch).forEach(function (k) {
+            var prefKey = map[k];
+            if (!prefKey) { return; }
+            var v = patch[k];
+            if (k === 'countries') { v = normalizeCountryList(v).join(','); }
+            else { v = !!v; }
+            if (useStremio) { Stremio.setPref(prefKey, v); }
+            else { p[prefKey] = v; }
+        });
+        if (!useStremio) { U.store.set(PREFS_KEY, p); }
+        return getTidyCfg();
+    }
+
+    var COUNTRY_WORDS = {
+        TR: 'TR', TUR: 'TR', TURK: 'TR', TURKIYE: 'TR', TURKEY: 'TR',
+        UK: 'UK', GB: 'UK', ENG: 'UK', BRITISH: 'UK',
+        NL: 'NL', NED: 'NL', NLD: 'NL', DUTCH: 'NL', NEDERLAND: 'NL', HOLLAND: 'NL',
+        DE: 'DE', GER: 'DE', GERMANY: 'DE', DEUTSCH: 'DE',
+        US: 'US', USA: 'US', AMERICA: 'US',
+        FR: 'FR', FRA: 'FR', FRANCE: 'FR', FRENCH: 'FR',
+        ES: 'ES', ESP: 'ES', SPAIN: 'ES', SPANISH: 'ES',
+        IT: 'IT', ITA: 'IT', ITALY: 'IT', ITALIAN: 'IT',
+        AR: 'AR', ARB: 'AR', ARAB: 'AR', ARABIC: 'AR',
+        PT: 'PT', BR: 'BR', PL: 'PL', RU: 'RU', GR: 'GR', BE: 'BE', AT: 'AT', CH: 'CH', CA: 'CA', AU: 'AU'
+    };
+    var NON_COUNTRY_2 = { TV: 1, HD: 1, SD: 1, '4K': 1, '8K': 1, IP: 1, FX: 1, VIP: 1, RAW: 1 };
+    var DECOR_BOUND = /^[\s\-=_*#|┃│─═•·.+~<>✦★☆●◆■▲►»«]+|[\s\-=_*#|┃│─═•·.+~<>✦★☆●◆■▲►»«]+$/g;
+    var DIVIDER_WORDS = /^(?:separator|divider|section|group|category|kategori|placeholder|empty|none)$/i;
+    var ADULT_RE = /(?:^|[^0-9])(?:18\+|\+18|₊₁₈)|\b(?:xxx|adult|porn|porno|erotic|erotik|nsfw|sex|brazzers|playboy|hustler|redlight|dorcel|venus)\b/i;
+
+    function isSeparatorName(rawName) {
+        var core = ('' + (rawName || '')).replace(DECOR_BOUND, '').trim();
+        if (!core) { return true; }
+        if (DIVIDER_WORDS.test(core)) { return true; }
+        return !/[A-Za-z0-9\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF\u4E00-\u9FFF]/.test(core);
+    }
+    function isAdultChannel(c) {
+        return ADULT_RE.test((c.group || '') + ' ' + (c.name || ''));
+    }
+    function countryFromText(s) {
+        var t = ('' + (s || '')).trim().replace(/^[\[({|┃]+\s*/, '');
+        var m = /^([A-Za-z]{2,12})(?:\s*[:|\-┃\/\])]|$)/.exec(t);
+        if (!m) { return ''; }
+        var tok = m[1].toUpperCase();
+        if (COUNTRY_WORDS[tok]) { return COUNTRY_WORDS[tok]; }
+        if (/^[A-Z]{2}$/.test(tok) && !NON_COUNTRY_2[tok] && /[:|\-┃\/\])]/.test(t.slice(tok.length, tok.length + 3))) { return tok; }
+        return '';
+    }
+    function extractCountry(group, name) {
+        return countryFromText(group) || countryFromText(name) || '';
+    }
+    var KEEP_UPPER = { TR: 1, UK: 1, NL: 1, DE: 1, US: 1, FR: 1, ES: 1, IT: 1, AR: 1, TV: 1, HD: 1, FHD: 1, UHD: 1, '4K': 1, '8K': 1, HEVC: 1, VIP: 1, NBA: 1, UFC: 1, NHL: 1, NFL: 1, MLB: 1, F1: 1, PPV: 1, VOD: 1, CNN: 1, BBC: 1, TRT: 1 };
+    function cleanGroup(group, country) {
+        var g = ('' + (group || 'Live TV')).trim();
+        g = g.replace(/^([A-Za-z]{2,12})\s*[:|\-┃\/]+\s*/i, function (all, word) {
+            var up = word.toUpperCase();
+            return (COUNTRY_WORDS[up] || (country && up === country)) ? '' : all;
+        });
+        g = g.replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '');
+        g = g.replace(/\s+(?:VIP|RAW)$/i, '');
+        g = g.replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
+        if (!g) { g = 'Live TV'; }
+        g = g.split(' ').map(function (w) {
+            var up = w.toUpperCase();
+            if (KEEP_UPPER[up] || w.length <= 3) { return w === up ? up : w; }
+            if (w === up) { return w.charAt(0) + w.slice(1).toLowerCase(); }
+            return w;
+        }).join(' ');
+        return country ? (country + ' · ' + g) : g;
+    }
+    function extractQuality(rawName) {
+        var s = '' + (rawName || '');
+        var res = '';
+        var base = 100;
+        if (/\b(?:4k|uhd|2160p?)\b/i.test(s)) { res = '4K'; base = 400; }
+        else if (/\b(?:fhd|1080p?|full\s*hd)\b/i.test(s)) { res = 'FHD'; base = 300; }
+        else if (/\b(?:hevc|h\.?265|x265)\b/i.test(s)) { res = 'HEVC'; base = 250; }
+        else if (/\b(?:hd|720p)\b/i.test(s)) { res = 'HD'; base = 200; }
+        else if (/\b(?:sd|480p|360p|lq)\b/i.test(s)) { res = 'SD'; base = 50; }
+        var isHevc = /\b(?:hevc|h\.?265|x265)\b/i.test(s);
+        var fpsM = /\b(50|60)\s*fps\b/i.exec(s);
+        var fps = fpsM ? +fpsM[1] : 0;
+        var isBackup = /\b(?:backup|bak|alt|mirror|spare|yedek|link\s*\d+)\b/i.test(s);
+        var score = base + (fps ? 30 : 0) + (isHevc && res !== 'HEVC' ? 25 : 0) - (isBackup ? 150 : 0);
+        var parts = [];
+        if (isBackup && !res) { parts.push('Backup'); }
+        else {
+            if (res) { parts.push(res); }
+            if (isHevc && res && res !== 'HEVC') { parts.push('HEVC'); }
+            if (fps) { parts.push(String(fps)); }
+            if (isBackup) { parts.push('Backup'); }
+        }
+        return { score: score, badge: parts.join(' '), res: res };
+    }
+    function cleanChannelName(rawName, country) {
+        var s = ('' + (rawName || '')).replace(DECOR_BOUND, '').trim();
+        s = s.replace(/^[\[(]([A-Za-z]{2,4})[\])]\s*/i, function (all, c) {
+            var up = c.toUpperCase();
+            return (COUNTRY_WORDS[up] || up === country) ? '' : all;
+        });
+        s = s.replace(/^([A-Za-z]{2,4})\s*[:|\-┃\/]+\s*/i, function (all, c) {
+            var up = c.toUpperCase();
+            return (COUNTRY_WORDS[up] || up === country) ? '' : all;
+        });
+        s = s.replace(/^(?:VIP|RAW)\s*[:|\-┃\/]+\s*/i, '');
+        var stripped = s.replace(/\[(?:4k|uhd|fhd|hd|sd|hevc|h\.?26[45]|vip|raw|backup|yedek|1080p|720p|50fps|60fps)\]/ig, ' ')
+            .replace(/\((?:4k|uhd|fhd|hd|sd|hevc|h\.?26[45]|vip|raw|backup|yedek|1080p|720p|50fps|60fps)\)/ig, ' ');
+        if (country) {
+            stripped = stripped.replace(new RegExp('\\s*[(\\[]' + country + '[)\\]]\\s*', 'ig'), ' ');
+        }
+        stripped = stripped.replace(/\b(?:4k\s*uhd|uhd\s*4k|full\s*hd|uhd|4k|fhd|hevc|h\.?265|x265|h\.?264|x264|1080p|720p|480p|50\s*fps|60\s*fps|backup|yedek|hd|sd)\b/ig, ' ');
+        stripped = stripped.replace(/\s+(?:VIP|RAW)$/i, '');
+        stripped = stripped.replace(DECOR_BOUND, '').replace(/\s+/g, ' ').trim();
+        return stripped || s || ('' + (rawName || U.t('Channel')));
+    }
+    function normalizeMergeKey(name) {
+        return ('' + (name || '')).toLowerCase()
+            .replace(/['’".,!?:;()\[\]|┃\-_/*•·]+/g, ' ')
+            .replace(/\s+/g, ' ').trim();
+    }
+    function cloneChannel(c) {
+        var o = {};
+        Object.keys(c).forEach(function (k) { o[k] = c[k]; });
+        return o;
+    }
+    function toVariantRecord(c, cleanGrp) {
+        return {
+            id: c.id, name: c._cleanName || c.name, rawName: c._rawName || c.name,
+            badge: c._qBadge || 'SD', score: c._qScore || 100,
+            url: c.url, group: cleanGrp || c.group, type: c.type,
+            ua: c.ua || '', ref: c.ref || '', cookie: c.cookie || '', drm: c.drm || null,
+            archive: !!c.archive, archiveDays: +c.archiveDays || 0, streamId: +c.streamId || 0,
+            _yt: !!c._yt, vod: !!c.vod, _playlistId: c._playlistId
+        };
+    }
+    function tidyChannels(rawList, cfg) {
+        cfg = cfg || getTidyCfg();
+        var list = rawList || [];
+        if (!cfg.enabled) { return list.slice(0); }
+        var cleaned = [];
+        list.forEach(function (src, idx) {
+            if (!src || isSeparatorName(src.name)) { return; }
+            if (cfg.hideAdult && isAdultChannel(src)) { return; }
+            var c = cloneChannel(src);
+            c._idx = idx;
+            c._rawName = src.name;
+            c._rawGroup = src.group || 'Live TV';
+            c._country = extractCountry(c._rawGroup, c._rawName);
+            var q = extractQuality(c._rawName);
+            c._qScore = q.score;
+            c._qBadge = q.badge;
+            c._cleanName = cleanChannelName(c._rawName, c._country);
+            c._cleanGroup = cleanGroup(c._rawGroup, c._country);
+            c.name = c._cleanName;
+            c.group = c._cleanGroup;
+            cleaned.push(c);
+        });
+
+        var merged;
+        if (cfg.collapseVariants) {
+            var buckets = {}, order = [];
+            cleaned.forEach(function (c) {
+                if (c.guideOnly) { order.push([c]); return; }
+                var scope = (c.type || 'tv') + '|' + (c._country || c._cleanGroup).toLowerCase() + '|' + normalizeMergeKey(c._cleanName);
+                if (!buckets[scope]) { buckets[scope] = []; order.push(buckets[scope]); }
+                buckets[scope].push(c);
+            });
+            merged = order.map(function (groupList) {
+                if (groupList.length === 1) {
+                    var single = groupList[0];
+                    if (!single.guideOnly) {
+                        single.variants = [toVariantRecord(single, single._cleanGroup)];
+                        single._mergedIds = [single.id];
+                    }
+                    return single;
+                }
+                groupList.sort(function (a, b) {
+                    if (b._qScore !== a._qScore) { return b._qScore - a._qScore; }
+                    return a._idx - b._idx;
+                });
+                var primary = cloneChannel(groupList[0]);
+                // Prefer a general category name over dedicated "4K" / "HEVC" sub-bouquet when available
+                var prefGroup = primary._cleanGroup;
+                if (/\b(4k|uhd|hevc|vip)\b/i.test(prefGroup)) {
+                    for (var j = 0; j < groupList.length; j++) {
+                        if (!/\b(4k|uhd|hevc)\b/i.test(groupList[j]._cleanGroup)) { prefGroup = groupList[j]._cleanGroup; break; }
+                    }
+                }
+                primary._cleanGroup = prefGroup;
+                primary.group = prefGroup;
+                primary._mergedIds = [];
+                primary.variants = [];
+                var firstArch = null;
+                groupList.forEach(function (v) {
+                    primary._mergedIds.push(v.id);
+                    primary.variants.push(toVariantRecord(v, v._cleanGroup));
+                    if (!primary.logo && v.logo) { primary.logo = v.logo; }
+                    if (!primary.tvgId && v.tvgId) { primary.tvgId = v.tvgId; }
+                    if (!firstArch && v.archive && v.archiveDays > 0 && v.streamId) { firstArch = v; }
+                });
+                if (!primary.archive && firstArch) {
+                    primary.archive = true;
+                    primary.archiveDays = firstArch.archiveDays;
+                    primary._archiveVariant = { archive: true, archiveDays: firstArch.archiveDays, streamId: firstArch.streamId, _playlistId: firstArch._playlistId };
+                }
+                return primary;
+            });
+        } else {
+            merged = cleaned;
+        }
+
+        // Stage D: Country/language priority boost (preserving relative order per bucket)
+        var countries = cfg.countries || [];
+        if (countries.length) {
+            var rankMap = {};
+            countries.forEach(function (code, rIdx) { rankMap[code] = rIdx; });
+            merged.forEach(function (c, i) { c._sortPos = i; });
+            merged.sort(function (a, b) {
+                var ra = Object.prototype.hasOwnProperty.call(rankMap, a._country) ? rankMap[a._country] : 1000;
+                var rb = Object.prototype.hasOwnProperty.call(rankMap, b._country) ? rankMap[b._country] : 1000;
+                if (ra !== rb) { return ra - rb; }
+                return a._sortPos - b._sortPos;
+            });
+        }
+        return merged;
+    }
+
     function build(channels) {
         var groups = [], byGroup = {}, byId = {};
         channels.forEach(function (c) {
             byId[c.id] = c;
+            if (Array.isArray(c._mergedIds)) {
+                c._mergedIds.forEach(function (mid) { if (!byId[mid]) { byId[mid] = c; } });
+            }
             if (c.guideOnly) { return; }   // (its TV guide alone: the Guide tab, no row)
             var key = c.type + '|' + c.group;
             if (!byGroup[key]) { byGroup[key] = []; groups.push({ type: c.type, name: c.group }); }
@@ -631,6 +907,19 @@ var IPTV = (function () {
         var d = { ts: Date.now(), channels: channels, groups: groups, byId: byId, byGroup: byGroup, catalogs: catalogs };
         favCatalog(d);
         return d;
+    }
+    function buildView(rawChannels) {
+        _rawChannels = rawChannels || [];
+        var cfg = getTidyCfg();
+        var display = cfg.enabled ? tidyChannels(_rawChannels, cfg) : _rawChannels;
+        return build(display);
+    }
+    function rebuild() {
+        if (!_rawChannels) { return _cache; }
+        _sources = null;
+        _cache = buildView(_rawChannels);
+        if (typeof EPG !== 'undefined' && EPG.start) { setTimeout(function () { EPG.start(); }, 0); }
+        return _cache;
     }
 
     function tagChannels(channels, playlistId) {
@@ -876,7 +1165,7 @@ var IPTV = (function () {
     function load(forceId) {
         var playlists = getPlaylists().filter(function (p) { return !p.off; });   // (switched off: not read)
         if (!playlists.length) {
-            _cache = build([]);
+            _cache = buildView([]);
             if (typeof EPG !== 'undefined' && EPG.start) { setTimeout(EPG.start, 0); }   // (their guides dropped: no Guide tab)
             return Promise.resolve(_cache);
         }
@@ -902,7 +1191,7 @@ var IPTV = (function () {
                     if (!seen[k]) { seen[k] = 1; channels.push(c); }
                 });
             });
-            _cache = build(channels);
+            _cache = buildView(channels);
             if (typeof EPG !== 'undefined' && EPG.start) { setTimeout(EPG.start, 0); }   // (their TV guides: see js/epg.js)
             return _cache;
         });
@@ -957,7 +1246,16 @@ var IPTV = (function () {
             if (!cat) { return []; }
             var q = (extra && extra.search) ? ('' + extra.search).toLowerCase() : '';
             var out = [];
-            var list = cat._favs ? favs().map(function (id) { return d.byId[id]; }).filter(Boolean) : (d.byGroup[cat.type + '|' + cat._group] || []);
+            var list = [];
+            if (cat._favs) {
+                var seenFav = {};
+                favs().forEach(function (id) {
+                    var fc = d.byId[id];
+                    if (fc && !seenFav[fc.id]) { seenFav[fc.id] = 1; list.push(fc); }
+                });
+            } else {
+                list = d.byGroup[cat.type + '|' + cat._group] || [];
+            }
             list.forEach(function (c) {
                 if (q && c.name.toLowerCase().indexOf(q) === -1) { return; }
                 out.push(toMeta(c));
@@ -1009,9 +1307,28 @@ var IPTV = (function () {
             }
             var list = getPlaylists(), pl = list[find(list, c._playlistId)];
             if (isStalker(pl)) { return stalkerStreams(c, pl); }
+            var variants = (Array.isArray(c.variants) && c.variants.length > 1) ? c.variants : null;
             return youTubeEnd(c.url).then(function (page) {
-                if (page) { return [{ url: page, _yt: true, ytPage: page, name: c.name, title: 'YouTube · ' + c.group }]; }
-                return plainStreams(c);
+                if (page && !variants) { return [{ url: page, _yt: true, ytPage: page, name: c.name, title: 'YouTube · ' + c.group }]; }
+                if (!variants) { return plainStreams(c); }
+                var out = [];
+                variants.forEach(function (v, idx) {
+                    if (idx === 0 && page) {
+                        out.push({ url: page, _yt: true, ytPage: page, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
+                        return;
+                    }
+                    if (v._yt) {
+                        out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
+                        return;
+                    }
+                    var vpl = list[find(list, v._playlistId)];
+                    if (isStalker(vpl)) { return; }
+                    var st = plainStreams(v)[0];
+                    var from = sourceOf(v);
+                    st.title = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
+                    out.push(st);
+                });
+                return out.length ? out : plainStreams(c);
             });
         });
     }
@@ -1068,6 +1385,7 @@ var IPTV = (function () {
         macOf: macOf, stbUa: STB_UA, stalkerPortal: stalkerPortal, stalkerCheck: stalkerCheck, addStalker: addStalker, isStalker: isStalker, stalkerAll: stalkerAll, setStalkerAll: setStalkerAll, stalkerGroups: stalkerGroups, setStalkerGroups: setStalkerGroups,
         xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, m3uGroups: m3uGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
         setArchiveOffset: setArchiveOffset, catchupUrl: catchupUrl,
+        getTidyCfg: getTidyCfg, setTidyCfg: setTidyCfg, tidyChannels: tidyChannels, rebuild: rebuild,
         isFavorite: isFavorite, setFavorite: setFavorite, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,
