@@ -664,8 +664,108 @@ async function run() {
         assert.fail('not implemented');
     });
 
-    await runTest('m3uStreamParser (Streaming chunked M3U parser)', () => {
-        assert.fail('not implemented');
+    await runTest('m3uStreamParser (Streaming chunked M3U parser)', async () => {
+        const svc = loadService();
+        const parser = svc.m3uStreamParser({ max: 100 });
+        const sample = [
+            '\uFEFF#EXTM3U url-tvg="https://epg.example.com/g.xml"',
+            '#PLAYLIST:Giant Test List',
+            '#EXTINF:-1 tvg-id="a" tvg-logo="https://img.example.com/1.png" group-title="TR",Channel 1',
+            'http://stream.example.com/live/1.ts|Referer=https%3A%2F%2Fref.example.com%2F',
+            '#EXTINF:-1 tvg-id="b" group-title="News",Kanal Türkçe 📺',
+            '#EXTVLCOPT:http-user-agent=VLC/3.0',
+            '#EXTHTTP:{"Cookie":"sid=xyz"}',
+            'http://stream.example.com/live/2.m3u8'
+        ].join('\r\n');
+
+        const buf = Buffer.from(sample, 'utf8');
+        for (let off = 0; off < buf.length; off += 17) {
+            parser.feed(buf.slice(off, Math.min(off + 17, buf.length)));
+        }
+        const res = parser.end();
+
+        assert.strictEqual(res.title, 'Giant Test List');
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(res.guides)), ['https://epg.example.com/g.xml']);
+        assert.strictEqual(res.count, 2);
+        assert.strictEqual(res.dropped, 0);
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(res.channels[0])), {
+            name: 'Channel 1',
+            logo: 'https://img.example.com/1.png',
+            group: 'TR',
+            tvgId: 'a',
+            ref: 'https://ref.example.com/',
+            radio: false,
+            sport: false,
+            type: 'tv',
+            url: 'http://stream.example.com/live/1.ts'
+        });
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(res.channels[1])), {
+            name: 'Kanal Türkçe 📺',
+            logo: '',
+            group: 'News',
+            tvgId: 'b',
+            ua: 'VLC/3.0',
+            cookie: 'sid=xyz',
+            radio: false,
+            sport: false,
+            type: 'tv',
+            url: 'http://stream.example.com/live/2.m3u8'
+        });
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(res.groups)), [
+            { name: 'TR', type: 'tv', count: 1 },
+            { name: 'News', type: 'tv', count: 1 }
+        ]);
+
+        // Browser IPTV module: routes raw HTTP(S) M3U via YTPlay.m3uLoad + m3uChannels without IndexedDB
+        let m3uLoadCalled = false;
+        let m3uChannelsCalled = false;
+        let bigStoreWriteCount = 0;
+        const iptvCtx = loadBrowserScript('js/iptv.js', {
+            YTPlay: {
+                installMode: () => 'tizenbrew',
+                m3uLoad: (u, groups) => {
+                    m3uLoadCalled = true;
+                    assert.strictEqual(u, 'https://example.com/giant.m3u');
+                    assert.deepStrictEqual(groups, ['TR']);
+                    return Promise.resolve({
+                        state: 'ready',
+                        at: 999999,
+                        title: 'Giant Test List',
+                        guides: ['https://epg.example.com/g.xml'],
+                        groups: res.groups,
+                        count: 1,
+                        dropped: 0,
+                        error: ''
+                    });
+                },
+                m3uChannels: (u, groups) => {
+                    m3uChannelsCalled = true;
+                    assert.strictEqual(u, 'https://example.com/giant.m3u');
+                    assert.deepStrictEqual(groups, ['TR']);
+                    return Promise.resolve({ channels: [res.channels[0]] });
+                }
+            }
+        });
+        const origBigSet = iptvCtx.U.bigStore.set;
+        iptvCtx.U.bigStore.set = function (k, v) {
+            bigStoreWriteCount++;
+            return origBigSet(k, v);
+        };
+        const pid = iptvCtx.IPTV.addPlaylist('https://example.com/giant.m3u', 'Giant');
+        assert.ok(pid);
+        assert.strictEqual(iptvCtx.IPTV.setPlaylistGroups(pid, ['TR']), true);
+        await iptvCtx.IPTV.load(true);
+        assert.strictEqual(m3uLoadCalled, true);
+        assert.strictEqual(m3uChannelsCalled, true);
+        assert.strictEqual(bigStoreWriteCount, 0);
+        const st = iptvCtx.IPTV.status(pid);
+        assert.strictEqual(st.count, 1);
+        assert.strictEqual(st.title, 'Giant Test List');
+        assert.strictEqual(st.groupList.length, 2);
+        const chs = iptvCtx.IPTV.channels();
+        assert.strictEqual(chs.length, 1);
+        assert.strictEqual(chs[0].name, 'Channel 1');
+        assert.strictEqual(chs[0].ref, 'https://ref.example.com/');
     });
 
     await runTest('escHtml (Phone QR group name HTML escaping)', () => {

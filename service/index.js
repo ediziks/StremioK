@@ -2388,6 +2388,7 @@ function handle(req, res) {
         if (path === '/aiom/addons') { aiomControl(req, res, parts[1], leaving); return; }
         if (path === '/xtvod/list' || path === '/xtvod/find') { xtvControl(req, res, path, parts[1]); return; }   // (an Xtream account's films and series: see xtvControl)
         if (path === '/xtlive/cats' || path === '/xtlive/list') { xtlControl(req, res, path, parts[1]); return; }   // (an Xtream account's live TV categories & channels: see xtlControl)
+        if (path === '/m3u/load' || path === '/m3u/groups' || path === '/m3u/channels') { m3uControl(req, res, path, parts[1]); return; }   // (large M3U playlist: streaming parser & disk store)
         if (path === '/stalker/list' || path === '/stalker/link' || path === '/stalker/genres' || path === '/stalker/vod' || path === '/stalker/play') { stalkerControl(req, res, path, parts[1], leaving); return; }   // (a Stalker portal: see stalkerControl)   // (AIOManager's addons: see aiomControl)   // (a live channel's sound repacked: see liveControl)   // (the phone's one-time page: see below)
         if (path === '/fsfile') {   // a USB file over HTTP, with Range: the player reads a big one from here (see fsfile in the header)
             var whyF = fsAllowed(req, parts[1]);
@@ -5237,7 +5238,7 @@ function xtvGet(url, onText, cb) {
 // title, written and read in small pieces (the service also relays live channels, YouTube and
 // guides: nothing here holds it up for long). Saved lists not used for XTV_FILE_MS are deleted.
 function xtvFile(key) { var d = tokenDir(); return d ? d + '/xtv-' + epgHash(key).toString(36) + '.jsonl' : null; }
-var _xtvSwept = false, XTV_FILES = /^xt[vl]-[0-9a-z]+\.jsonl?(\.part)?$/;
+var _xtvSwept = false, XTV_FILES = /^(?:xt[vl]|m3u)-[0-9a-z]+\.jsonl?(\.part)?$/;
 function xtvSweep() {
     if (_xtvSwept) { return; }
     _xtvSwept = true;
@@ -5585,6 +5586,483 @@ function xtlControl(req, res, path, query) {
         xtlLoad(x, function (items, at, groups, dropped) {
             if (items && at && Date.now() - at <= XTV_FRESH_MS) {
                 x.items = items; x.at = at; x.groups = groups; x.dropped = dropped; x.state = 'ready'; x.saved = true;
+                finishWaiters(null);
+                return;
+            }
+            fetchFromNet();
+        });
+        return;
+    }
+    fetchFromNet();
+}
+
+// ---- Streaming M3U playlists (/m3u/load, /m3u/groups, /m3u/channels) ----
+// Giant raw .m3u/.m3u8 URLs (up to M3U_MAX = 250 MB) are downloaded chunk-by-chunk, decoded with
+// StringDecoder('utf8'), parsed line-by-line (never holding the full raw text in RAM), and
+// persisted as JSON lines in m3u-<hash>.jsonl inside tokenDir(). Once saved to disk, items are
+// freed from RAM and /m3u/channels streams matching channels directly from disk.
+var M3U_MAX = 250 * 1048576, M3U_MS = 6 * 60000, M3U_ITEMS = 100000, M3U_KEEP = 4, M3U_FRESH_MS = 86400000, M3U_NAME_MAX = 200;
+var M3U_VOD_LINK = /\.(mkv|mp4|m4v|avi|mov|wmv|mpg|mpeg|webm)(?:[?#]|$)/i;
+var M3U_XTREAM_VOD = /^https?:\/\/[^\/]+(?:\/[^?#]*)?\/(movie|series)\/[^\/?#]+\/[^\/?#]+\/\d+\.[a-z0-9]{2,4}(?:[?#]|$)/i;
+var M3U_AUDIO_URL = /\.(?:aac|flac|m4a|mp3|oga|ogg|opus|wav)(?:[?#]|$)/i;
+var _m3u = Object.create(null);
+
+function m3uAttr(line, re) {
+    var m = re.exec(line);
+    return m ? m[1] : '';
+}
+function m3uHeaderInto(c, name, value) {
+    var n = String(name || '').trim().toLowerCase(), v = String(value || '').trim();
+    if (!v) { return; }
+    if (n === 'user-agent') { c.ua = v; }
+    else if (n === 'referer' || n === 'referrer') { c.ref = v; }
+    else if (n === 'cookie') { c.cookie = v; }
+}
+function m3uDrmSys(v) {
+    v = String(v || '').toLowerCase();
+    return /widevine/.test(v) ? 'widevine' : /playready/.test(v) ? 'playready' : /clearkey/.test(v) ? 'clearkey' : 'other';
+}
+function m3uHeadersOf(text) {
+    var out = {}, n = 0;
+    String(text || '').split('&').forEach(function (kv) {
+        var eq = kv.indexOf('='), k = eq > 0 ? kv.slice(0, eq).trim() : '', v = eq > 0 ? kv.slice(eq + 1) : '';
+        try { v = decodeURIComponent(v); } catch (e) {}
+        if (/^[A-Za-z0-9-]{1,40}$/.test(k) && v && v.length <= 1000 && !/[\r\n]/.test(v) && n < 16) { out[k] = v; n++; }
+    });
+    return out;
+}
+function m3uHexOf(v) {
+    v = String(v || '').trim();
+    if (/^[0-9a-f]{32}$/i.test(v)) { return v.toLowerCase(); }
+    if (!/^[A-Za-z0-9_-]{21,24}={0,2}$/.test(v)) { return ''; }
+    try {
+        var b64 = v.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+        b64 += '=='.slice(0, (4 - b64.length % 4) % 4);
+        var buf = Buffer.from(b64, 'base64');
+        var out = buf.toString('hex');
+        return out.length === 32 ? out : '';
+    } catch (e) { return ''; }
+}
+function m3uKeysOf(text) {
+    var out = {}, n = 0, j = null;
+    function put(kid, key) { kid = m3uHexOf(kid); key = m3uHexOf(key); if (kid && key && n < 32) { out[kid] = key; n++; } }
+    text = String(text || '').trim();
+    if (text.charAt(0) === '{') {
+        try { j = JSON.parse(text); } catch (e) { j = null; }
+        if (j && Array.isArray(j.keys)) { j.keys.forEach(function (k) { if (k) { put(k.kid, k.k); } }); }
+        else if (j && typeof j === 'object') { Object.keys(j).forEach(function (k) { put(k, j[k]); }); }
+    } else {
+        text.split(',').forEach(function (pair) { var p = pair.split(':'); if (p.length === 2) { put(p[0], p[1]); } });
+    }
+    return n ? out : null;
+}
+function m3uDrmServer(d, url, headers) {
+    if (/^https?:\/\/[^\s|]+$/i.test(url || '') && url.length <= 2000) { d.url = url; }
+    else if (url) { d.inline = true; d.keys = m3uKeysOf(url); }
+    if (headers) { d.h = m3uHeadersOf(headers); }
+}
+function m3uDrmInto(c, key, v) {
+    if (key === 'stream_headers' || key === 'manifest_headers') {
+        var sh = m3uHeadersOf(v);
+        Object.keys(sh).forEach(function (k) { m3uHeaderInto(c, k, sh[k]); });
+        return;
+    }
+    var d = c.drm || (c.drm = { sys: '' });
+    if (key === 'license_type') { d.sys = m3uDrmSys(v); return; }
+    if (key === 'license_key') {
+        var p = v.split('|');
+        m3uDrmServer(d, p[0], p[1]);
+        if (p[2] && p[2] !== 'R{SSM}') { d.bad = true; }
+        if (p[3] === 'B') { d.b64 = true; } else if (p[3]) { d.bad = true; }
+        return;
+    }
+    if (key === 'drm_legacy') { var q = v.split('|'); d.sys = m3uDrmSys(q[0]); m3uDrmServer(d, q[1], q[2]); return; }
+    if (key === 'drm') {
+        var j = null;
+        try { j = JSON.parse(v); } catch (e) { j = null; }
+        var sys = j && typeof j === 'object' ? Object.keys(j)[0] : '', lic = sys && j[sys] && j[sys].license;
+        d.sys = sys ? m3uDrmSys(sys) : 'other';
+        if (lic && typeof lic === 'object') { m3uDrmServer(d, typeof lic.server_url === 'string' ? lic.server_url : '', typeof lic.req_headers === 'string' ? lic.req_headers : ''); }
+        if (lic && (lic.keyids || lic.keys)) { d.inline = true; d.keys = m3uKeysOf(JSON.stringify(lic.keyids || { keys: lic.keys })); }
+    }
+}
+function m3uStreamParser(opts) {
+    opts = opts || {};
+    var max = opts.max != null ? +opts.max : M3U_ITEMS;
+    var onChannel = typeof opts.onChannel === 'function' ? opts.onChannel : null;
+    var dec = new StringDecoder('utf8'), rest = '', firstChunk = true;
+    var r = { channels: onChannel ? null : [], count: 0, dropped: 0, title: '', guides: [], groups: [] };
+    var groupMap = Object.create(null), cur = null, pre = null;
+
+    function emit(c) {
+        if (!c.ua) { delete c.ua; }
+        if (!c.ref) { delete c.ref; }
+        if (!c.cookie) { delete c.cookie; }
+        var gk = c.type + '|' + c.group;
+        if (!groupMap[gk]) {
+            groupMap[gk] = { name: c.group, type: c.type, count: 0 };
+            r.groups.push(groupMap[gk]);
+        }
+        groupMap[gk].count++;
+        r.count++;
+        if (onChannel) { onChannel(c); }
+        else { r.channels.push(c); }
+    }
+
+    function processLine(raw) {
+        var s = raw.replace(/^\s+/, '').replace(/\r$/, '');
+        if (s.indexOf('#EXTM3U') === 0 && !r.guides.length) {
+            r.guides = m3uAttr(s, /(?:^|\s)(?:url-tvg|x-tvg-url|tvg-url)="([^"]{1,4000})"/i).split(',')
+                .map(function (u) { return u.trim(); })
+                .filter(function (u) { return /^https?:\/\//i.test(u); }).slice(0, 5);
+        }
+        if (!r.title && s.indexOf('#EXTM3U') === 0) {
+            r.title = m3uAttr(s, /(?:^|\s)(?:x-playlist-name|playlist-name|x-tvg-name)="([^"]{1,200})"/i).trim().slice(0, M3U_NAME_MAX);
+        } else if (!r.title && s.indexOf('#PLAYLIST:') === 0) {
+            r.title = s.slice(10).trim().slice(0, M3U_NAME_MAX);
+        }
+        if (s.indexOf('#EXTINF') === 0) {
+            var group = m3uAttr(s, /group-title="([^"]*)"/i);
+            var kind = m3uAttr(s, /tvg-type="([^"]*)"/i);
+            cur = {
+                name: (s.slice(s.lastIndexOf(',') + 1).trim()) || 'Channel',
+                logo: m3uAttr(s, /tvg-logo="([^"]*)"/i),
+                group: group,
+                tvgId: m3uAttr(s, /tvg-id="([^"]*)"/i),
+                ua: m3uAttr(s, /http-user-agent="([^"]*)"/i),
+                ref: m3uAttr(s, /http-referr?er="([^"]*)"/i),
+                radio: /^(?:1|true|yes)$/i.test(m3uAttr(s, /(?:^|\s)radio="([^"]*)"/i).trim()) || /^radio$/i.test(kind),
+                sport: /^sports?$/i.test(kind),
+                url: ''
+            };
+            if (pre) {
+                if (pre.drm) { cur.drm = pre.drm; }
+                if (!cur.ua && pre.ua) { cur.ua = pre.ua; }
+                if (!cur.ref && pre.ref) { cur.ref = pre.ref; }
+                if (!cur.cookie && pre.cookie) { cur.cookie = pre.cookie; }
+                pre = null;
+            }
+            if (/^guide$/i.test(kind)) {
+                if (max > 0 && r.count >= max) { r.dropped++; cur = null; return; }
+                cur.guideOnly = true; cur.radio = false; cur.type = 'tv';
+                if (!cur.group) { cur.group = 'TV guide'; }
+                emit(cur);
+                cur = null;
+            }
+        } else if (/^#EXTVLCOPT:http-(user-agent|referr?er)=/i.test(s)) {
+            if (cur) { var opt = /^#EXTVLCOPT:http-(user-agent|referr?er)=(.*)$/i.exec(s); m3uHeaderInto(cur, opt[1], opt[2]); }
+        } else if (/^#KODIPROP:inputstream\.adaptive\.[a-z_]+=/i.test(s)) {
+            var kp = /^#KODIPROP:inputstream\.adaptive\.([a-z_]+)=(.*)$/i.exec(s);
+            m3uDrmInto(cur || (pre = pre || {}), kp[1].toLowerCase(), kp[2].trim());
+        } else if (s.indexOf('#EXTHTTP:') === 0) {
+            var j = null;
+            try { j = JSON.parse(s.slice(9)); } catch (e) { j = null; }
+            if (cur && j && typeof j === 'object') {
+                Object.keys(j).forEach(function (k) { if (typeof j[k] === 'string') { m3uHeaderInto(cur, k, j[k]); } });
+            }
+        } else if (s && s.charAt(0) !== '#') {
+            if (cur) {
+                var u = s.trim();
+                var bar = u.indexOf('|');
+                if (bar !== -1 && /^[A-Za-z][A-Za-z-]*=/.test(u.slice(bar + 1))) {
+                    u.slice(bar + 1).split('&').forEach(function (kv) {
+                        var eq = kv.indexOf('='), v = eq === -1 ? '' : kv.slice(eq + 1);
+                        try { v = decodeURIComponent(v); } catch (e) {}
+                        if (eq > 0) { m3uHeaderInto(cur, kv.slice(0, eq), v); }
+                    });
+                    u = u.slice(0, bar);
+                }
+                if (/^https?:\/\//i.test(u)) {
+                    if (max > 0 && r.count >= max) { r.dropped++; cur = null; return; }
+                    cur.url = u;
+                    cur.radio = !cur.sport && (cur.radio || /\bradio\b/i.test(cur.group) || M3U_AUDIO_URL.test(u));
+                    cur.type = cur.sport ? 'sport' : cur.radio ? 'radio' : 'tv';
+                    if (!cur.group) { cur.group = cur.sport ? 'Sports' : cur.radio ? 'Live Radio' : 'Live TV'; }
+                    if (M3U_VOD_LINK.test(u) || M3U_XTREAM_VOD.test(u)) { cur.vod = true; }
+                    emit(cur);
+                }
+                cur = null;
+            }
+        }
+    }
+
+    return {
+        feed: function (chunk) {
+            var text = Buffer.isBuffer(chunk) ? dec.write(chunk) : String(chunk || '');
+            if (!text) { return; }
+            if (firstChunk) {
+                firstChunk = false;
+                if (text.charCodeAt(0) === 0xFEFF) { text = text.slice(1); }
+            }
+            var lines = (rest + text).split(/\r?\n/);
+            rest = lines.pop();
+            for (var i = 0; i < lines.length; i++) { processLine(lines[i]); }
+        },
+        end: function () {
+            var last = rest + dec.end();
+            rest = '';
+            if (last) { processLine(last); }
+            return r;
+        },
+        result: r
+    };
+}
+
+function m3uFile(u) { var d = tokenDir(); return d ? d + '/m3u-' + epgHash(u).toString(36) + '.jsonl' : null; }
+function m3uSave(x, items) {
+    var f = m3uFile(x.key), fs = require('fs'), at = 0, failed = false, s;
+    if (!f) { return; }
+    try { s = fs.createWriteStream(f + '.part', { mode: 384 }); } catch (e) { return; }
+    s.on('error', function (e) { failed = true; log('M3U list not saved (' + (e.code || e.message) + ')'); });
+    s.write(JSON.stringify({ key: x.key, at: x.at, title: x.title || '', guides: x.guides || [], groups: x.groups || [], count: x.count || 0, dropped: x.dropped || 0 }) + '\n');
+    (function more() {
+        if (failed) { return; }
+        var lines = [], end = Math.min(items.length, at + XTV_SLICE);
+        for (; at < end; at++) { lines.push(JSON.stringify(items[at])); }
+        var room = s.write(lines.length ? lines.join('\n') + '\n' : '');
+        if (at >= items.length) {
+            s.end(function () {
+                if (failed) { return; }
+                if (_m3u[x.key] !== x) { fs.unlink(f + '.part', noop); return; }
+                fs.rename(f + '.part', f, function (e) {
+                    if (!e && _m3u[x.key] === x) {
+                        x.saved = true;
+                        x.items = null;   // free RAM once persisted on disk
+                    }
+                });
+            });
+            return;
+        }
+        if (room) { setTimeout(more, 0); } else { s.once('drain', more); }
+    })();
+}
+function m3uReadMeta(x, cb) {
+    var f = m3uFile(x.key), fs = require('fs'), rest = '', dec = new StringDecoder('utf8'), s, done = false;
+    cb = once(cb);
+    if (!f) { cb(); return; }
+    try { s = fs.createReadStream(f, { highWaterMark: 16384 }); } catch (e) { cb(); return; }
+    s.on('data', function (c) {
+        if (done) { return; }
+        rest += dec.write(c);
+        var nl = rest.indexOf('\n');
+        if (nl !== -1) {
+            done = true;
+            var firstLine = rest.slice(0, nl);
+            try { s.destroy(); } catch (e) {}
+            var o = null;
+            try { o = JSON.parse(firstLine); } catch (e2) { o = null; }
+            if (o && o.key === x.key) { cb(o); } else { cb(); }
+        }
+    });
+    s.on('end', function () {
+        if (done) { return; }
+        var o = null;
+        try { o = JSON.parse(rest + dec.end()); } catch (e) { o = null; }
+        if (o && o.key === x.key) { cb(o); } else { cb(); }
+    });
+    s.on('error', function () { cb(); });
+}
+function m3uStreamFromDisk(x, groupSet, res) {
+    var f = m3uFile(x.key), fs = require('fs');
+    if (!f) { send(res, 500, 'application/json', JSON.stringify({ error: 'no disk store' })); return; }
+    var s;
+    try { s = fs.createReadStream(f, { highWaterMark: 65536 }); } catch (e) {
+        send(res, 500, 'application/json', JSON.stringify({ error: 'read failed' }));
+        return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.write('{"channels":[');
+    var firstLine = true, wroteAny = false, rest = '', dec = new StringDecoder('utf8'), aborted = false;
+    res.on('close', function () { aborted = true; try { s.destroy(); } catch (e) {} });
+    function handleLine(l) {
+        if (aborted || !l) { return; }
+        if (firstLine) { firstLine = false; return; }
+        if (groupSet) {
+            var o = null;
+            try { o = JSON.parse(l); } catch (e) { o = null; }
+            if (!o || !groupSet[o.group || '']) { return; }
+        }
+        res.write((wroteAny ? ',' : '') + l);
+        wroteAny = true;
+    }
+    s.on('data', function (c) {
+        var lines = (rest + dec.write(c)).split('\n');
+        rest = lines.pop();
+        for (var i = 0; i < lines.length; i++) { handleLine(lines[i]); }
+    });
+    s.on('end', function () {
+        if (aborted) { return; }
+        handleLine(rest + dec.end());
+        res.end(']}');
+    });
+    s.on('error', function () {
+        if (!aborted) { try { res.end(']}'); } catch (e) {} }
+    });
+}
+function m3uFetch(url, cb) {
+    cb = once(cb);
+    var first = null, r = null, size = 0, done = false;
+    try { first = urllib.parse(url); } catch (e) { first = null; }
+    var parser = m3uStreamParser({ max: M3U_ITEMS });
+    var timer = setTimeout(function () { finish(upError('took too long', 504)); }, M3U_MS);
+    function finish(err, resObj) {
+        if (done) { return; }
+        done = true;
+        clearTimeout(timer);
+        try { if (err && r) { r.abort(); } } catch (e) {}
+        cb(err, resObj);
+    }
+    function go(u, hops) {
+        var pu;
+        try { pu = urllib.parse(u); } catch (e) { finish(upError('bad address', 400)); return; }
+        if ((pu.protocol !== 'http:' && pu.protocol !== 'https:') || !dlHostOk(pu.hostname)) { finish(upError('an address it can\'t reach', 400)); return; }
+        var opts = { hostname: pu.hostname, port: pu.port, path: pu.path, method: 'GET', headers: { 'User-Agent': TV_UA, 'Accept': '*/*', 'Accept-Encoding': 'identity' } };
+        if (pu.protocol === 'https:' && caList().length) { opts.ca = caList(); }
+        try {
+            r = (pu.protocol === 'https:' ? https : http).request(opts, function (resp) {
+                if (done) { resp.resume(); return; }
+                var sc = resp.statusCode;
+                if (sc >= 300 && sc < 400 && resp.headers.location && hops < 4) {
+                    resp.resume();
+                    var next = urllib.resolve(u, resp.headers.location), np = null;
+                    try { np = urllib.parse(next); } catch (e) { np = null; }
+                    if (!sameServerRedirect(first, np)) { finish(upError('redirected to another server: not followed', 502)); return; }
+                    go(next, hops + 1);
+                    return;
+                }
+                if (sc !== 200) { resp.resume(); finish(upError('HTTP ' + sc, sc === 401 || sc === 403 ? 401 : 502)); return; }
+                resp.on('data', function (c) {
+                    if (done) { return; }
+                    size += c.length;
+                    if (size > M3U_MAX) { finish(upError('too large (over 250 MB)', 502)); return; }
+                    try { parser.feed(c); } catch (e) { finish(e); }
+                });
+                resp.on('end', function () {
+                    if (done) { return; }
+                    try { finish(null, parser.end()); } catch (e) { finish(e); }
+                });
+                resp.on('error', function (e) { finish(e); });
+            });
+            r.on('error', function (e) { finish(upError('couldn\'t reach it (' + (e.code || e.message) + ')', 502)); });
+            guardSelf(r, function () { finish(upError('an address it can\'t reach', 400)); });
+            r.end();
+        } catch (e) { finish(e); }
+    }
+    go(url, 0);
+}
+function m3uControl(req, res, path, query) {
+    if (!entryAllowed(req, query)) { send(res, 403, 'text/plain', 'not allowed (token)'); return; }
+    var q = {};
+    String(query || '').split('&').forEach(function (kv) {
+        var i = kv.indexOf('=');
+        if (i > 0) { try { q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (e) {} }
+    });
+    var u = String(q.u || '').trim();
+    var pu = null;
+    try { pu = urllib.parse(u); } catch (e) { pu = null; }
+    if (!pu || (pu.protocol !== 'http:' && pu.protocol !== 'https:') || u.length > 2000 || !dlHostOk(pu.hostname)) {
+        send(res, 400, 'application/json', JSON.stringify({ error: 'bad playlist link' }));
+        return;
+    }
+    var groups = q.groups ? String(q.groups).split(',').map(function (g) { return g.trim(); }).filter(Boolean) : [];
+    var groupSet = null;
+    if (groups.length) {
+        groupSet = Object.create(null);
+        groups.forEach(function (g) { groupSet[g] = true; });
+    }
+    var force = q.force === '1';
+    xtvSweep();
+    var x = _m3u[u];
+    if (!x) {
+        var keys = Object.keys(_m3u);
+        if (keys.length >= M3U_KEEP) { keys.sort(function (a, b) { return _m3u[a].used - _m3u[b].used; }); delete _m3u[keys[0]]; }
+        x = _m3u[u] = { key: u, state: 'new', title: '', guides: [], groups: [], count: 0, dropped: 0, at: 0, items: null, saved: false, waiters: [] };
+    }
+    x.used = Date.now();
+
+    function reply(err) {
+        if (err) {
+            send(res, err.status || 502, 'application/json', JSON.stringify({
+                state: 'failed', at: 0, title: '', guides: [], groups: [], count: 0, dropped: 0, error: err.message || 'failed'
+            }));
+            return;
+        }
+        if (path === '/m3u/channels') {
+            if (x.saved && m3uFile(x.key)) {
+                m3uStreamFromDisk(x, groupSet, res);
+                return;
+            }
+            var list = x.items || [];
+            if (groupSet) { list = list.filter(function (c) { return !!groupSet[c.group || '']; }); }
+            send(res, 200, 'application/json', JSON.stringify({ channels: list }));
+            return;
+        }
+        var filteredCount = x.count;
+        if (groupSet && Array.isArray(x.groups)) {
+            filteredCount = 0;
+            x.groups.forEach(function (g) { if (groupSet[g.name]) { filteredCount += g.count; } });
+        }
+        send(res, 200, 'application/json', JSON.stringify({
+            state: x.state,
+            at: x.at,
+            title: x.title || '',
+            guides: x.guides || [],
+            groups: x.groups || [],
+            count: filteredCount,
+            dropped: x.dropped || 0,
+            error: ''
+        }));
+    }
+
+    var ready = (x.saved || x.items) && x.at && Date.now() - x.at <= M3U_FRESH_MS;
+    if (!force && ready) { reply(null); return; }
+    if (x.loading) { x.waiters.push(reply); return; }
+    x.loading = true;
+    x.waiters.push(reply);
+
+    function finishWaiters(err) {
+        x.loading = false;
+        var w = x.waiters; x.waiters = [];
+        w.forEach(function (fn) { try { fn(err); } catch (e) {} });
+    }
+    function fetchFromNet() {
+        m3uFetch(u, function (err, r) {
+            if (err) {
+                x.state = (x.saved || x.items) ? 'ready' : 'failed';
+                finishWaiters(err);
+                return;
+            }
+            x.at = Date.now();
+            x.title = r.title || '';
+            x.guides = r.guides || [];
+            x.groups = r.groups || [];
+            x.count = r.count || 0;
+            x.dropped = r.dropped || 0;
+            x.state = 'ready';
+            x.saved = false;
+            if (m3uFile(x.key)) {
+                x.items = r.channels;
+                m3uSave(x, r.channels);
+            } else {
+                x.items = r.channels;
+            }
+            finishWaiters(null);
+        });
+    }
+
+    if (!force && !x.saved && !x.items && !x.triedFile && m3uFile(x.key)) {
+        x.triedFile = true;
+        m3uReadMeta(x, function (meta) {
+            if (meta && meta.at && Date.now() - meta.at <= M3U_FRESH_MS) {
+                x.at = meta.at;
+                x.title = meta.title || '';
+                x.guides = meta.guides || [];
+                x.groups = meta.groups || [];
+                x.count = meta.count || 0;
+                x.dropped = meta.dropped || 0;
+                x.state = 'ready';
+                x.saved = true;
+                x.items = null;
                 finishWaiters(null);
                 return;
             }
@@ -6408,6 +6886,7 @@ function epgClear() {
     _epg = Object.create(null); _epgQueue = [];   // (one being read: not saved, see epgPump)
     _xtv = Object.create(null); _xtvQueue = [];   // (the Xtream lists: read again when asked for)
     _xtl = Object.create(null);
+    _m3u = Object.create(null);
     return files.count + lists.count;
 }
 function epgControl(req, res, path, query) {

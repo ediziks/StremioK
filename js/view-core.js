@@ -436,6 +436,29 @@ var ViewParts = {};
                 });
             }, function (e) { U.toast(U.problem(e), 5000); });
         };
+        var m3uGroupsBtn = U.el('div', 'pill focusable modal-btn', U.t('Channel groups'));
+        m3uGroupsBtn.__onselect = function () {
+            closeModal();
+            U.toast(U.t('Asking the server for its groups…'), 4000);
+            IPTV.m3uGroups(playlist.id).then(function (list) {
+                if (!list.length) { U.toast(U.t('The server lists no groups'), 4000); return; }
+                pickMany(U.t('Groups to read from “{name}”', { name: label }), list.map(function (g) { return { key: g.name, label: g.name + ' (' + g.count + ')' }; }), {
+                    on: playlist.groups, none: true,
+                    button: function (n) { return n ? U.tn(n, 'Read {n} group', 'Read {n} groups') : U.t('Read all groups'); }
+                }, function (keys) {
+                    Stremio.iptvSetPlaylistGroups(playlist.id, keys);
+                    refreshAddonRows('local:iptv');
+                    U.toast(U.t('Reloading playlist…'), 4000);
+                    renderSettings();
+                    Stremio.iptvReload(playlist.id).then(function () {
+                        refreshAddonRows('local:iptv');
+                        var st = Stremio.iptvStatus(playlist.id);
+                        U.toast(st.error ? U.t('Reload failed: {why}', { why: st.error }) : U.t('Loaded {n} channels', { n: st.count }), 4000);
+                        renderSettings();
+                    });
+                });
+            }, function (e) { U.toast(U.problem(e), 5000); });
+        };
         var reload = U.el('div', 'pill focusable modal-btn', U.t('Reload'));
         var remove = U.el('div', 'pill focusable modal-btn danger', U.t('Remove'));
 
@@ -518,6 +541,7 @@ var ViewParts = {};
         if (!playlist.off && typeof EPG !== 'undefined' && EPG.available && EPG.available()) { row.appendChild(guide); }
         if (!playlist.off && fmt) { row.appendChild(format); row.appendChild(xtGroups); row.appendChild(noVodBtn); }
         if (!playlist.off && IPTV.isStalker(playlist)) { row.appendChild(groups); }
+        if (!playlist.off && !fmt && !IPTV.isStalker(playlist) && IPTV.m3uGroups) { row.appendChild(m3uGroupsBtn); }
         if (!playlist.off) { row.appendChild(reload); }
         row.appendChild(remove);
         box.appendChild(row);

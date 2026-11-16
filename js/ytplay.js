@@ -225,6 +225,28 @@ var YTPlay = (function () {
             return U.getJSON(PROXY + '/xtlive/list?base=' + encodeURIComponent(base) + '&user=' + encodeURIComponent(user) + '&pass=' + encodeURIComponent(pass) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
         });
     }
+    function m3uLoad(u, groups, force) {
+        if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
+        var more = (groups && groups.length ? '&groups=' + encodeURIComponent(groups.join(',')) : '') +
+            (force ? '&force=1' : '');
+        return ensureService().then(entryAuth).then(function (a) {
+            return U.getJSON(PROXY + '/m3u/load?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 4 * 1048576, null, a.h);
+        });
+    }
+    function m3uGroups(u, force) {
+        if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
+        var more = force ? '&force=1' : '';
+        return ensureService().then(entryAuth).then(function (a) {
+            return U.getJSON(PROXY + '/m3u/groups?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 4 * 1048576, null, a.h);
+        });
+    }
+    function m3uChannels(u, groups) {
+        if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
+        var more = groups && groups.length ? '&groups=' + encodeURIComponent(groups.join(',')) : '';
+        return ensureService().then(entryAuth).then(function (a) {
+            return U.getJSON(PROXY + '/m3u/channels?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
+        });
+    }
     // A playlist's TV guide, read and kept by the service (see service/index.js, epgControl):
     // epgLoad asks it to read it for these channels (k: their keys as a bitset, EPG.bitsFor) ->
     // { state, at, channels, programmes, partial, error }; epgGet: their programs -> { <key>:
@@ -379,6 +401,6 @@ var YTPlay = (function () {
         return MODE === 'tizenbrew' ? U.t('TizenBrew module') : MODE === 'wgt' ? U.t('Sideloaded app (.wgt)') : U.t('Browser (development)');
     }
 
-    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
+    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, m3uLoad: m3uLoad, m3uGroups: m3uGroups, m3uChannels: m3uChannels, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
         installLabel: installLabel, unavailableMessage: unavailableMessage, isRunning: isRunning, port: PORT };
 })();

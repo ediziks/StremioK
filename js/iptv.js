@@ -226,6 +226,21 @@ var IPTV = (function () {
         savePlaylists(list, true);
         return true;
     }
+    function m3uGroups(id) {
+        var list = getPlaylists(), i = find(list, id);
+        if (i < 0) { return Promise.reject(new Error(U.t('Playlist not found'))); }
+        if (typeof YTPlay === 'undefined' || !YTPlay.m3uGroups || (YTPlay.installMode && YTPlay.installMode() === 'browser')) {
+            var st = _status[id];
+            if (st && Array.isArray(st.groupList) && st.groupList.length) {
+                return Promise.resolve(st.groupList);
+            }
+            return Promise.reject(new Error(U.t('Channel groups are read by StremioK’s service (not in a desktop browser)')));
+        }
+        return YTPlay.m3uGroups(list[i].url).then(function (r) {
+            if (!r || !Array.isArray(r.groups)) { throw new Error(U.t('Couldn’t read the playlist’s groups')); }
+            return r.groups;
+        });
+    }
 
     // ---- A Stalker portal: its address and the MAC address your provider registered ----
     // Read by StremioK's service, which asks as a MAG box does (YTPlay.stalkerList): its channels
@@ -614,6 +629,7 @@ var IPTV = (function () {
         }
         var src = playlist.url + (playlist.mac ? '#mac=' + playlist.mac : '') + (playlist.genres ? '#genres=' + playlist.genres.join(',') : '') + (playlist.groups ? '#groups=' + playlist.groups.join(',') : '');   // (its saved copy: this portal, MAC and groups')
         var useXtLive = isXtream(playlist.url) && typeof YTPlay !== 'undefined' && YTPlay.xtliveList && (!YTPlay.installMode || YTPlay.installMode() !== 'browser');
+        var useServiceM3U = !isStalker(playlist) && !isXtream(playlist.url) && /^https?:\/\//i.test(playlist.url) && typeof YTPlay !== 'undefined' && YTPlay.m3uLoad && YTPlay.m3uChannels && (!YTPlay.installMode || YTPlay.installMode() !== 'browser');
 
         function xtLiveToChannel(c) {
             var sid = +c.id || 0;
@@ -629,6 +645,52 @@ var IPTV = (function () {
                 archive: !!c.archive,
                 archiveDays: +c.archiveDays || 0
             };
+        }
+
+        function serviceM3UToChannel(c, seen) {
+            var base = 'iptv:' + idOf(c.tvgId || c.name);
+            var id = base, n = 2;
+            while (seen[id]) { id = base + '-' + n; n++; }
+            seen[id] = 1;
+            var u = c.url || '';
+            var out = {
+                id: id,
+                type: c.type || 'tv',
+                name: c.name || '',
+                logo: c.logo || '',
+                group: c.group || 'Live TV',
+                tvgId: c.tvgId || '',
+                ua: c.ua || '',
+                ref: c.ref || '',
+                radio: !!c.radio,
+                sport: !!c.sport,
+                url: u,
+                _yt: /^https?:\/\/(?:[^\/]+\.)?youtube\.com(?::\d+)?(?:\/|$)/i.test(u) || /^https?:\/\/youtu\.be(?::\d+)?(?:\/|$)/i.test(u)
+            };
+            if (c.cookie) { out.cookie = c.cookie; }
+            if (c.drm) { out.drm = c.drm; }
+            if (c.guideOnly) { out.guideOnly = true; }
+            if (c.vod) { out.vod = true; }
+            return out;
+        }
+
+        function filterByGroups(channels) {
+            if (!Array.isArray(playlist.groups) || !playlist.groups.length || isXtream(playlist.url) || isStalker(playlist)) {
+                return channels;
+            }
+            var allow = {};
+            playlist.groups.forEach(function (g) { allow[g] = true; });
+            return channels.filter(function (c) { return !!allow[c.group || '']; });
+        }
+
+        function buildGroupList(channels) {
+            var map = {}, list = [];
+            channels.forEach(function (c) {
+                var k = (c.type || 'tv') + '|' + (c.group || '');
+                if (!map[k]) { map[k] = { name: c.group || '', type: c.type || 'tv', count: 0 }; list.push(map[k]); }
+                map[k].count++;
+            });
+            return list;
         }
 
         function finish(text, at) {
@@ -651,6 +713,10 @@ var IPTV = (function () {
                     channels = channels.filter(function (c) { return !XTREAM_VOD.test(c.url); });
                     st.vodLines = r.channels.length - channels.length;
                 }
+                if (!isXtream(playlist.url) && !isStalker(playlist)) {
+                    st.groupList = buildGroupList(channels);
+                    channels = filterByGroups(channels);
+                }
                 return counted(tagChannels(channels, playlist.id));
             });
         }
@@ -663,6 +729,40 @@ var IPTV = (function () {
                 st.error = U.t('No channels parsed (is the URL returning the .m3u file?)');
             }
             return channels;
+        }
+
+        function serviceM3ULoad() {
+            return YTPlay.m3uLoad(playlist.url, playlist.groups, force).then(function (r) {
+                if (!r || r.state === 'failed' || r.error) {
+                    throw new Error((r && r.error) || U.t('Could not fetch the playlist URL'));
+                }
+                st.fetchedAt = r.at || Date.now();
+                st.title = r.title || '';
+                st.guides = r.guides || [];
+                st.groupList = Array.isArray(r.groups) ? r.groups : [];
+                if (r.dropped) { st.dropped = r.dropped; }
+                return YTPlay.m3uChannels(playlist.url, playlist.groups);
+            }).then(function (r) {
+                if (!r || !Array.isArray(r.channels)) {
+                    throw new Error(U.t('Could not fetch the playlist URL'));
+                }
+                var seen = {}, max = maxChannels();
+                var list = r.channels;
+                if (max && list.length > max) {
+                    st.dropped = (st.dropped || 0) + (list.length - max);
+                    list = list.slice(0, max);
+                }
+                var channels = list.map(function (c) { return serviceM3UToChannel(c, seen); });
+                _sources = null;
+                return counted(tagChannels(channels, playlist.id));
+            }, function (e) {
+                st.error = (e && e.message) ? e.message : U.t('Could not fetch the playlist URL');
+                return [];
+            });
+        }
+
+        if (useServiceM3U) {
+            return serviceM3ULoad();
         }
 
         var saved = force ? Promise.resolve(null) : readPersist(playlist.id);
@@ -928,7 +1028,7 @@ var IPTV = (function () {
         removePlaylist: removePlaylist, renamePlaylist: renamePlaylist, setPlaylistOff: setPlaylistOff,
         movePlaylist: movePlaylist, setPlaylistGuide: setPlaylistGuide, label: labelOf,
         macOf: macOf, stbUa: STB_UA, stalkerPortal: stalkerPortal, stalkerCheck: stalkerCheck, addStalker: addStalker, isStalker: isStalker, stalkerAll: stalkerAll, setStalkerAll: setStalkerAll, stalkerGroups: stalkerGroups, setStalkerGroups: setStalkerGroups,
-        xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
+        xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, m3uGroups: m3uGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
         isFavorite: isFavorite, setFavorite: setFavorite, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,
