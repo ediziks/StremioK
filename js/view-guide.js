@@ -131,7 +131,32 @@
     // The grid for g.start, rows g.top to g.top + ROWS: the hours, then a row a channel. Returns
     // the cell wanted: { id, start } that program, { id, t } that channel's at time t; else
     // what's on now on the first channel drawn.
+    function refreshLiveMarks() {
+        var g = _g;
+        if (!g || !g.box || !document.documentElement.contains(g.box)) { return; }
+        var curId = (typeof Player !== 'undefined' && Player.currentLiveId) ? Player.currentLiveId() : '';
+        var cols = g.box.querySelectorAll('.guide-ch');
+        for (var i = 0; i < cols.length; i++) {
+            var col = cols[i], isLive = !!(curId && col.__chanId === curId);
+            if (col.classList) { col.classList[isLive ? 'add' : 'remove']('guide-ch-live'); }
+            var dot = col.querySelector('.guide-live-dot');
+            if (isLive && !dot) {
+                dot = U.el('span', 'guide-live-dot', '● ');
+                col.insertBefore(dot, col.firstChild);
+            } else if (!isLive && dot && dot.parentNode) {
+                dot.parentNode.removeChild(dot);
+            }
+        }
+    }
+    var _liveHooked = false;
+    function hookLiveMark() {
+        if (_liveHooked || typeof Player === 'undefined' || !Player.onLiveMetaChange) { return; }
+        _liveHooked = true;
+        Player.onLiveMetaChange(refreshLiveMarks);
+    }
+
     function draw(g, want) {
+        hookLiveMark();
         var old = g.el.querySelector('.guide'), loading = g.el.querySelector('.guide-loading');
         if (loading) { loading.parentNode.removeChild(loading); }
         var box = U.el('div', 'guide'), now = Date.now() / 1000, end = g.start + SPAN, found = null, first = null;
@@ -148,7 +173,11 @@
         var any = false;
         g.chans.slice(g.top, g.top + ROWS).forEach(function (c, k) {
             var r = g.top + k, row = U.el('div', 'guide-row'), track = U.el('div', 'guide-track'), nodes = [], onNode = null;
-            var name = U.el('div', 'guide-ch'), logo = c.logo || EPG.logo(c.id);
+            var curLiveId = (typeof Player !== 'undefined' && Player.currentLiveId) ? Player.currentLiveId() : '';
+            var isLiveCh = !!(curLiveId && curLiveId === c.id);
+            var name = U.el('div', 'guide-ch' + (isLiveCh ? ' guide-ch-live' : '')), logo = c.logo || EPG.logo(c.id);
+            name.__chanId = c.id;
+            if (isLiveCh) { name.appendChild(U.el('span', 'guide-live-dot', '● ')); }
             if (logo && U.cardImage(logo, 'logo')) {
                 var img = U.el('img', 'guide-ch-logo');
                 img.onerror = function () { if (img.parentNode) { img.parentNode.removeChild(img); } };
@@ -293,7 +322,21 @@
     // Played, CH+ / CH− go through the Guide's channels; each one's card (where BACK lands, on
     // the channel you end on) is what's on now on it. best: the remote's Play key.
     function playChannel(g, r, best) {
-        var c = g.chans[r], now = Date.now() / 1000, list = [], idx = 0;
+        var c = g.chans[r];
+        if (!c || c.guideOnly) { return; }
+        var browseMode = !best && typeof Stremio !== 'undefined' && Stremio.getPrefs && !!Stremio.getPrefs().liveBrowseMode;
+        if (browseMode && typeof Player !== 'undefined' && Player.isLivePlaying && Player.isLivePlaying() && Player.currentLiveId && Player.currentLiveId() === c.id && Player.isBrowseOverlay && Player.isBrowseOverlay()) {
+            Player.setBrowseOverlay(false);
+            return;
+        }
+        if ((browseMode || (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay())) && V.zapLiveChannel) {
+            var playableList = g.chans.filter(function (ch) { return !ch.guideOnly; });
+            var chIdx = 0;
+            for (var pIdx = 0; pIdx < playableList.length; pIdx++) { if (playableList[pIdx].id === c.id) { chIdx = pIdx; break; } }
+            V.zapLiveChannel(c, { browseOverlay: browseMode, channels: playableList, idx: chIdx, playBest: !!best });
+            return;
+        }
+        var now = Date.now() / 1000, list = [], idx = 0;
         g.chans.forEach(function (ch, i) {   // (every channel: a cell only for the rows drawn, where BACK lands)
             if (ch.guideOnly) { return; }   // (nothing to play)
             var nodes = g.nodes[i] || [], card = nodes[0] || null;
@@ -309,6 +352,7 @@
     }
     function playCatchup(c, p, url) {
         var focusNode = Focus.current();
+        if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
         Player.play({
             url: url,
             type: c.type || 'tv',

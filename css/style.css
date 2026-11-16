@@ -621,6 +621,7 @@ body.live-behind .guide-track { background: rgba(10, 14, 22, 0.42); }
 body.live-behind .guide-prog { background: rgba(20, 26, 40, 0.72); border-color: rgba(10, 14, 22, 0.55); color: #d1d5db; }
 body.live-behind .guide-prog.now { background: rgba(34, 46, 70, 0.82); color: #ffffff; }
 .guide-ch.guide-ch-live { border-left: 4px solid #34d399; color: #ecfdf5; }
+.guide-live-dot { color: #34d399; font-weight: bold; }
 
 /* --- 3-Pane Split Live TV Browser (js/view-iptv.js) --- */
 #screen-home.tab-tv .home-info { display: none; }
