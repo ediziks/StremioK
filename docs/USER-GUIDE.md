@@ -152,7 +152,8 @@ where it came from.
 | Hold OK | An item's own menu, where it has one: *Hold OK for more* shows in the bottom-right corner then. |
 | BACK | Back. On a main page (Home's tabs, Discover, Search, Settings) it goes to the top menu first (DOWN comes back to where you were); from the menu, to the page before, or *Exit StremioK?* on Home (OK exits, BACK stays). |
 | 0–9 | The top menu's items (see below); in the player, the subtitles' [timing, position and size](#keys-while-it-plays); on a live channel, a [channel number](#iptv-and-radio). |
-| UP / DOWN in the player | The quick bar / the menu ([While it plays](#while-it-plays)). |
+| LEFT in the player | On a live channel, opens the [channel drawer](#watching) with Now / Next guide info. |
+| UP / DOWN in the player | The quick bar (including *≡ Channels* on live TV) / the menu ([While it plays](#while-it-plays)). |
 | Red / Green / Yellow / Blue in the player | Audio tracks / subtitles / sources / stream info. |
 | CH+ / CH− | The next / previous channel while one plays. |
 | Guide | The Guide tab (instead of the TV's own guide). |
@@ -449,9 +450,9 @@ addons is shown once ("also on …").
 
 ### The quick bar (UP)
 
-Play/Pause · Restart · Previous · Next · Cast & more · Phone · Download · Private · Back, each
+Play/Pause · Channels (live TV) · Restart · Previous · Next · Cast & more · Phone · Download · Private · Back, each
 where it applies. It goes round (past the last is the first) and closes after 5 seconds
-without a key.
+without a key. On live TV, **≡ Channels** opens the [channel drawer](#watching).
 
 - **▣ Phone** (continue on phone): a QR code of what's playing, to open on a phone in **VLC**
   (the default) or **Infuse** (they play MKV, HEVC and surround sound a phone's browser would
@@ -623,8 +624,12 @@ counts, last download and any error (a failed refresh keeps the saved copy).
 - **▲ / ▼** set the order: a channel in two playlists comes from the first, and rows follow
   the order.
 - OK on one: *Rename*, *Turn off* / *Turn on* (off: its channels hidden, its copy kept), *Edit
-  link*, *Guide link*, *Reload*, *Remove*.
-- **A big Stalker portal:** *Channel groups* (OK on it) reads only the genres you tick.
+  link*, *Guide link*, *Channel groups*, *Edit groups on your phone*, *Reload*, *Remove*.
+  On an Xtream account, also *Movies & Series (VOD)* (**Included** or *Live TV only* to hide
+  its films and series) and *Catch-up time offset*.
+- **Picking groups** (Xtream, raw M3U playlists, and Stalker): *Channel groups* reads only the
+  groups you tick, or scan *Edit groups on your phone* on the same Wi-Fi to search, tick groups
+  and tap *Save to TV*.
 - **Auto-refresh** (*Off* by default): every hour, 3, 6 or 12 hours, all playlists and their
   TV guides are downloaded again, as *Reload* does, so a channel whose guide came late is back
   on the Guide tab. Never while something plays.
@@ -659,7 +664,10 @@ An Xtream account's films and series come with its channels, as do a Stalker por
 - **Guide only:** channels marked `tvg-type="guide"` show on the Guide tab
   alone; OK on a program finds that film in your addons (else Search).
 - **CH+ / CH−** switch through the row a channel came from; the one you stop on starts after a
-  short pause; BACK lands on its card.
+  short pause; BACK lands on its card. Press **LEFT** (or **UP › ≡ Channels**) while watching
+  to open the channel drawer with **Now** and **Next** programs: **← / →** switches group,
+  **↑ / ↓** moves between channels, **OK** zaps while playback continues behind it, and
+  **RETURN** closes.
 - **A channel's number:** type its position in that row (7, or 1 then 2 for 12).
 - Live streams show **● LIVE**: no seeking or resume.
 - **DRM channels:** Widevine and PlayReady play if the playlist's license server licenses the TV;
@@ -691,7 +699,10 @@ An Xtream account's films and series come with its channels, as do a Stalker por
   hours from the current half hour, with a line at the time now. ← / → go from program to
   program (the hours move past the edge), ↑ / ↓ to the channel above or below at the same
   time. The details strip describes the focused program; OK on what's on now (or a row still *Loading…*) plays the channel
-  (CH+ / CH− then go through the Guide's channels), on a later one shows its description. BACK,
+  (CH+ / CH− then go through the Guide's channels), on a later one shows its description. On
+  an Xtream channel with catch-up, past programs marked **↺** play from the start when you
+  press **OK** (*▶ Watch catch-up*; adjust *Catch-up time offset* on the account if times are
+  shifted). BACK,
   or a channel that stops, lands on the channel you ended on.
 - **Hold OK on a program** in the Guide tab: *▶ Watch now* (what's on now), *★ Add to / Remove
   from favorites* (its channel), and *Find in your addons*: a film opens its page with your

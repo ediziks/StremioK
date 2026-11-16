@@ -360,8 +360,11 @@ channels where it gives one; the rest is read from the source's name and file.
   like `The Book ThiefDrama / 2013 / 7.6`), else its title, looked up on TMDB (with your key,
   Spanish titles too), else Cinemeta (original titles only). One sure match (the same name, and
   the year when known) opens its page; anything else, a show included, opens Search.
-- **Size:** each playlist is downloaded up to 20 MB and keeps its first 30,000 channels
-  (*Largest playlist*: up to 100 MB, 150,000). Big ones
+- **Size:** each playlist downloaded in the browser is capped at 20 MB and 30,000 channels
+  (*Largest playlist*: up to 100 MB, 150,000). When StremioK's service is running, raw `.m3u` /
+  `.m3u8` links are streamed chunk-by-chunk through the service up to 250 MB and 100,000
+  channels, filtered to your chosen *Channel groups* before reaching the TV, and cached on disk
+  (a failed *Reload* keeps the saved copy). Big ones
   are read in chunks, with a count ("Reading playlists… 12,000 channels"), so the remote stays
   responsive. Copies are saved in the TV's database.
 - **Duplicates:** a channel listed twice is shown once only when it's exactly the same (link,
@@ -406,7 +409,19 @@ channels where it gives one; the rest is read from the source's name and file.
 - **Xtream accounts:** checked with `player_api.php` (its `user_info.auth`), then saved as the
   account's `get.php` link (`type=m3u_plus`, `output=ts`: servers' own HLS tends to stall
   minutes in; *Format* switches to `m3u8`). A server without `http(s)://` is `http://`; a
-  pasted Xtream link fills in the login.
+  pasted Xtream link fills in the login. When StremioK's service is running, live channels are
+  fetched from `player_api.php` (`get_live_categories` and `get_live_streams`) rather than
+  downloading a full `get.php` file: *Channel groups* filters by category ID before channels
+  reach the TV, and *Movies & Series (VOD): Live TV only* skips VOD catalogs (`js/xtvod.js`).
+  *Edit groups on your phone* opens a one-time phone page on the service with checkboxes,
+  search and *Save to TV*.
+- **Xtream catch-up:** channels with `tv_archive=1` expose past programs in the Guide tab
+  (marked `↺`) and play from `/timeshift/<user>/<pass>/<duration>/<YYYY-MM-DD:HH-MM>/<id>.ts`
+  (adjusted by *Catch-up time offset*, default **UTC (0h)**).
+- **Live channel and EPG drawer:** pressing LEFT while watching live TV (or UP › ≡ Channels)
+  opens the in-player channel drawer without interrupting playback. Channels are grouped by
+  playlist category (← / → switches group, ↑ / ↓ scrolls channels), showing Now and Next EPG
+  schedules; OK zaps to the focused channel immediately, and RETURN closes.
 - **Stalker portals:** read by the service as a MAG box asks (the MAC in a cookie, a MAG
   User-Agent, a `handshake` token) at `portal.php`, else `server/load.php`. Channels
   (`get_all_channels`, else `get_ordered_list` pages, 100 at most within 90 seconds, or with

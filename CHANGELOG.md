@@ -3,6 +3,21 @@
 What changed in each version of StremioK, newest first. How everything works is in the
 [user guide](docs/USER-GUIDE.md).
 
+## 2.4.3 — 2026-11-16
+- **Xtream Live API and group curation** (Settings › Content › IPTV): Xtream accounts now read
+  live categories and channels via `get_live_categories` / `get_live_streams`; *Channel groups*
+  works for Xtream accounts and raw M3U playlists, and *Movies & Series (VOD): Live TV only*
+  hides an account's VOD catalogs ([IPTV and radio](docs/USER-GUIDE.md#your-playlists)).
+- **Streaming M3U parser in the service:** large raw `.m3u` / `.m3u8` playlists up to 250 MB are
+  parsed chunk-by-chunk in StremioK's service and filtered to your chosen groups before reaching
+  the TV ([Technical reference](docs/TECHNICAL-REFERENCE.md#playlists)).
+- **Edit groups on your phone:** scan the QR code on a playlist or Xtream account to search,
+  tick groups on your phone and tap *Save to TV*.
+- **Xtream catch-up** in the Guide tab: past programs marked `↺` on catch-up channels play as
+  seekable streams (*Catch-up time offset* on the account adjusts time zone shifts).
+- **In-player channel drawer** (`LEFT` or `UP › ≡ Channels` while watching live TV): browse
+  groups and channels with Now/Next programs and zap without leaving playback.
+
 ## 2.4.2 — 2026-11-16
 - **Built-in audio and subtitle tracks named from the file** more often: also when the TV lists
   fewer tracks than the file. The subtitle list says each language in full, and of your

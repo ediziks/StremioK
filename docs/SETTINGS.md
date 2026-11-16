@@ -79,15 +79,15 @@ sources that are only torrents; Stremio's can also convert a video the TV can't 
 ### IPTV
 
 Your M3U playlists: *Add playlist*, *Add Xtream account* (server, username, password; OK on
-it for *Format*: **MPEG-TS** or HLS), *Add Stalker portal* (its address and MAC address), ▲ / ▼ to order
+it for *Format*: **MPEG-TS** or HLS, *Channel groups*, *Edit groups on your phone*, *Movies & Series (VOD)*: **Included** or *Live TV only*, and *Catch-up time offset*: **UTC (0h)** or −12h to +14h), *Add Stalker portal* (its address and MAC address), ▲ / ▼ to order
 them, and OK on one for *Rename*, *Turn off* /
-*Turn on*, *Edit link*, *Guide link* (empty: the playlist's own TV guide), *Reload*, *Remove*.
+*Turn on*, *Edit link*, *Guide link* (empty: the playlist's own TV guide), *Channel groups*, *Edit groups on your phone*, *Reload*, *Remove*.
 Each says whether its guide was read. See [IPTV and radio](USER-GUIDE.md#iptv-and-radio).
 
 | Setting | Choices | What it does |
 |---------|---------|--------------|
 | *Auto-refresh* | **Off**, Every hour, Every 3 hours, Every 6 hours, Every 12 hours | Everything read again, as *Reload* does. |
-| *Largest playlist* | **20 MB**, 40, 60, 100 MB | It keeps 1,500 channels per MB. Above 20 MB an older TV may run out of memory. |
+| *Largest playlist* | **20 MB**, 40, 60, 100 MB | Browser download limit (1,500 channels per MB). Raw M3U playlists stream through StremioK's service up to 250 MB. |
 | *Stalker channels* | **First 100 pages**, Whole portal | How much of a portal is read (100 pages: about 1,400). *Whole portal*: minutes each *Reload*; a portal may block such a MAC. *Channel groups*: only those. |
 | *Stalker films and series* | **Kept 10 minutes**, Kept 5 minutes, Off | How long a portal's row, category or search is kept before it's asked again. |
 
