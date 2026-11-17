@@ -1245,25 +1245,25 @@ var ViewParts = {};
                 U.toast(U.t('No playable source for {name}', { name: ch.name }));
                 return;
             }
-            var chosenIdx = (typeof opts.streamIndex === 'number' && playable[opts.streamIndex]) ? opts.streamIndex : 0;
-            var chosen = playable[chosenIdx];
+            // opts.streamUrl: a variant picked by hand (Sources), else the best one
+            var chosen = playable[0];
+            if (opts.streamUrl) { playable.some(function (s) { if (s.url === opts.streamUrl) { chosen = s; return true; } return false; }); }
             // Build fallback candidates: all collapsed variants plus HLS mirror if primary Xtream TS fails
             var candidates = playable.slice(0);
             if (chosen && chosen.url && /\.ts(?:[?#]|$)/i.test(chosen.url) && /\/live\/[^\/?#]+\/[^\/?#]+\/\d+\.ts/i.test(chosen.url)) {
                 var hlsAlt = Object.assign({}, chosen, {
                     url: chosen.url.replace(/\.ts([?#]|$)/i, '.m3u8$1'),
+                    behaviorHints: {},   // (its own source id: Stremio.sourceId, by its link)
                     title: (chosen.title || ch.name) + ' · HLS'
                 });
                 if (!candidates.some(function (s) { return s.url === hlsAlt.url; })) { candidates.push(hlsAlt); }
             }
+            // The player's next source (nextSourceOnFail): the first candidate not tried yet, tried
+            // holding Stremio.sourceId()s, as the player keeps them.
             function nextLiveSource(tried) {
-                var seenUrls = {};
-                candidates.forEach(function (s, idx) { if (tried.indexOf(s.url) !== -1 || idx === chosenIdx) { seenUrls[s.url] = 1; } });
                 for (var cIdx = 0; cIdx < candidates.length; cIdx++) {
                     var cand = candidates[cIdx];
-                    if (cand && cand.url && tried.indexOf(cand.url) === -1 && (!chosen || cand.url !== chosen.url)) {
-                        chosenIdx = cIdx;
-                        chosen = cand;
+                    if (cand && cand.url && tried.indexOf(Stremio.sourceId(cand)) === -1) {
                         return {
                             total: candidates.length,
                             source: {
@@ -1336,6 +1336,7 @@ var ViewParts = {};
                     streams: candidates,
                     stream: chosen,
                     nextSource: candidates.length > 1 ? nextLiveSource : null,
+                    variantsOnly: true,   // (its next sources are this channel's own: see nextSourceOnFail)
                     formatInfo: Stremio.streamInfo ? Stremio.streamInfo(chosen) : null,
                     _headers: U.sanitizeHeaders(chosen._headers) || undefined,
                     zap: list.length > 1 ? zapStep : null,
@@ -1355,6 +1356,7 @@ var ViewParts = {};
             }
             playChosen(chosen.url, '');
         }, function () {
+            if (token !== _zapToken) { return; }   // (a later channel asked for since)
             U.spinner(false);
             U.toast(U.t('Could not load sources'));
         });

@@ -10,9 +10,7 @@ var App = (function () {
 
     function showScreen(name) {
         if (name !== _current) { U.crumb(name); }
-        if (name !== 'home' && typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) {
-            Player.exit();
-        }
+        if (Views.syncLiveOverlay) { Views.syncLiveOverlay(name); }   // (live TV behind the menus: Home's IPTV / Guide only)
         ['home', 'discover', 'detail', 'search', 'settings', 'addaddon'].forEach(function (n) {
             var el = screenEl(n);
             if (el && el.classList) { el.classList[n === name ? 'remove' : 'add']('hidden'); }

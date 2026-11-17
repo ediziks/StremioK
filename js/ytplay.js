@@ -234,9 +234,12 @@ var YTPlay = (function () {
             return U.getJSON(PROXY + '/xtlive/list?base=' + encodeURIComponent(base) + '&user=' + encodeURIComponent(user) + '&pass=' + encodeURIComponent(pass) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
         });
     }
+    // A playlist's chosen groups for the service: each name %-encoded before they're joined by
+    // commas (a group-title is free text: "Movies, Series" is one group), the whole encoded again.
+    function groupsParam(groups) { return encodeURIComponent(groups.map(function (g) { return encodeURIComponent(g); }).join(',')); }
     function m3uLoad(u, groups, force) {
         if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
-        var more = (groups && groups.length ? '&groups=' + encodeURIComponent(groups.join(',')) : '') +
+        var more = (groups && groups.length ? '&groups=' + groupsParam(groups) : '') +
             (force ? '&force=1' : '');
         return ensureService().then(entryAuth).then(function (a) {
             return U.getJSON(PROXY + '/m3u/load?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 4 * 1048576, null, a.h);
@@ -251,7 +254,7 @@ var YTPlay = (function () {
     }
     function m3uChannels(u, groups) {
         if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
-        var more = groups && groups.length ? '&groups=' + encodeURIComponent(groups.join(',')) : '';
+        var more = groups && groups.length ? '&groups=' + groupsParam(groups) : '';
         return ensureService().then(entryAuth).then(function (a) {
             return U.getJSON(PROXY + '/m3u/channels?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
         });

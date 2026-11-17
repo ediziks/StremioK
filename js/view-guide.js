@@ -333,7 +333,7 @@
             var playableList = g.chans.filter(function (ch) { return !ch.guideOnly; });
             var chIdx = 0;
             for (var pIdx = 0; pIdx < playableList.length; pIdx++) { if (playableList[pIdx].id === c.id) { chIdx = pIdx; break; } }
-            V.zapLiveChannel(c, { browseOverlay: browseMode, channels: playableList, idx: chIdx, playBest: !!best });
+            V.zapLiveChannel(c, { browseOverlay: browseMode, channels: playableList, idx: chIdx });
             return;
         }
         var now = Date.now() / 1000, list = [], idx = 0;

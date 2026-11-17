@@ -194,15 +194,7 @@ var Stremio = (function () {
             liveBrowseMode: p.liveBrowseMode !== false,   // ...keep live TV playing behind frosted UI on OK / BACK
             oledShift: p.oledShift === 'on' || p.oledShift === 'off' ? p.oledShift : 'auto' };   // Settings > Appearance: ±2px orbit + pause dim
     }
-    function countryCsv(val) {
-        if (val === undefined || val === null) { return 'TR,UK,NL'; }
-        var out = [], seen = {};
-        String(val).split(/[\s,;]+/).forEach(function (tok) {
-            var code = tok.trim().toUpperCase();
-            if (/^[A-Z]{2}$/.test(code) && !seen[code] && out.length < 8) { seen[code] = 1; out.push(code); }
-        });
-        return out.join(',');
-    }
+    function countryCsv(val) { return typeof IPTV !== 'undefined' && IPTV.countryList ? IPTV.countryList(val).join(',') : ''; }   // (the IPTV tidier's own reading)
     // A kind's size limits, in GB (0: none): { min, max, perHour }.
     function sizeLimits(all, kind) {
         var x = (all && typeof all === 'object' && all[kind] && typeof all[kind] === 'object') ? all[kind] : {};

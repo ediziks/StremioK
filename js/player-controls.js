@@ -1255,7 +1255,9 @@
                 U.spinner(false);
                 var playable = list.filter(Stremio.isPlayable);
                 if (!playable.length) { U.toast(U.t('No playable source for {name}', { name: c.name })); return; }
-                P.play({ url: playable[0].url, type: c.type || 'tv', id: c.id, name: c.name, poster: c.logo || '', streams: playable, stream: playable[0], _headers: U.sanitizeHeaders(playable[0]._headers) || undefined });
+                if (!S.active) { return; }   // (closed meanwhile)
+                // (the session goes on: BACK returns where this playback was opened from)
+                P.play({ url: playable[0].url, type: c.type || 'tv', id: c.id, name: c.name, poster: c.logo || '', isLive: true, streams: playable, stream: playable[0], _headers: U.sanitizeHeaders(playable[0]._headers) || undefined }, P.exitCallback());
             }, function () { U.spinner(false); U.toast(U.t('Could not load sources')); });
         }
     }

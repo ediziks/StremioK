@@ -184,7 +184,11 @@
         fullBtn.__onselect = function () { if (Player.setBrowseOverlay) { Player.setBrowseOverlay(false); } };
         var stopBtn = U.el('div', 'iptv-chip iptv-chip-stop focusable', '⏹ ' + U.t('Stop'));
         stopBtn.setAttribute('data-tb', 'hud-stop');
-        stopBtn.__onselect = function () { Player.exit(); redrawAll(); };
+        stopBtn.__onselect = function () {
+            Player.exit();   // (its BACK: the IPTV browser on the channel, see zapLiveChannel's onExited)
+            var row = _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0] || _st.toolbarFirstEl;
+            if (row) { Focus.setScope(scr('home'), row); }
+        };
         hud.appendChild(fullBtn);
         hud.appendChild(stopBtn);
         wireToolbarNav();
@@ -277,7 +281,8 @@
             _st.chanIdx = Math.max(0, Math.min(savedIdx, Math.max(0, _st.chans.length - 1)));
             _st.winTop = Math.max(0, Math.min(_st.chanIdx - Math.floor(CHAN_ROWS / 2), Math.max(0, _st.chans.length - CHAN_ROWS)));
             for (var i = 0; i < _st.cats.length; i++) { if (_st.cats[i].key === grpKey) { _st.catIdx = i; break; } }
-            renderCatsWindow(false);
+            var cur = Focus.current();   // (focus on the categories: kept there as they're redrawn)
+            renderCatsWindow(!!(cur && _st.paneCatsEl && _st.paneCatsEl.contains(cur)));
             renderChansWindow(true, false);
         }
         if (focusCenter) {
@@ -291,8 +296,7 @@
         if (!host) { return; }
         var catCap = visibleCatRows();
         if (_st.catIdx >= _st.cats.length) { _st.catIdx = Math.max(0, _st.cats.length - 1); }
-        if (_st.catIdx < _st.catTop) { _st.catTop = _st.catIdx; }
-        else if (_st.catIdx >= _st.catTop + catCap) { _st.catTop = _st.catIdx - catCap + 1; }
+        if (_st.catIdx < _st.catTop || _st.catIdx >= _st.catTop + catCap) { _st.catTop = _st.catIdx - Math.floor(catCap / 2); }
         _st.catTop = Math.max(0, Math.min(_st.catTop, Math.max(0, _st.cats.length - catCap)));
 
         U.clear(host);
@@ -323,14 +327,14 @@
                 if (_st.catIdx >= _st.catTop + catCap) { renderCatsWindow(true); return false; }
                 return _st.catNodes[_st.catIdx - _st.catTop];
             };
-            row.addEventListener('focus', function () {
+            row.__iptvFocus = function () {   // (focused: its channels shown once the remote settles)
                 _st.catIdx = abs;
                 if (_st.catDebounce) { clearTimeout(_st.catDebounce); }
                 _st.catDebounce = setTimeout(function () {
                     _st.catDebounce = null;
                     setActiveGroup(g.key, false);
                 }, 70);
-            }, false);
+            };
             host.appendChild(row);
             _st.catNodes.push(row);
             if (abs === _st.catIdx) { activeNode = row; }
@@ -425,7 +429,8 @@
             return [String(idx), (v.badge ? '[' + v.badge + '] ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '')];
         });
         pickList(ch.name + ' · ' + U.t('Sources'), items, '0', function (val) {
-            tuneChannel(ch, _st.chanIdx, true, +val || 0);
+            var v = ch.variants[+val || 0];
+            tuneChannel(ch, _st.chanIdx, true, v && v.url);
         });
     }
 
@@ -484,10 +489,10 @@
             node.classList[isChannelPlaying(node.__chan) ? 'add' : 'remove']('playing');
         });
         updateMiniHud();
-        renderInspector(_st.chans[_st.chanIdx]);
+        renderInspector(_st.chans[_st.chanIdx], null, true);
     }
 
-    function tuneChannel(ch, absIdx, forceFullscreen, streamIndex) {
+    function tuneChannel(ch, absIdx, forceFullscreen, streamUrl) {
         if (!ch) { return; }
         var browseMode = !forceFullscreen && !!(typeof Stremio !== 'undefined' && Stremio.getPrefs().liveBrowseMode);
         if (browseMode && isChannelPlaying(ch) && typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) {
@@ -500,15 +505,18 @@
                 browseOverlay: browseMode,
                 channels: _st.chans,
                 idx: absIdx,
-                streamIndex: streamIndex,
+                streamUrl: streamUrl,
                 onZapped: onChannelZapped
             });
         }
     }
 
-    function renderInspector(ch, focusActKey) {
+    // force: drawn again for the same channel (its playing state or favorite changed); else a
+    // channel already shown isn't rebuilt (a row's focus and the move that led there both ask).
+    function renderInspector(ch, focusActKey, force) {
         var host = _st.paneInspEl;
         if (!host) { return; }
+        if (!force && !focusActKey && ch && ch.id === _st.inspForId && host.firstChild) { return; }
         if (_st.inspTimer) { clearTimeout(_st.inspTimer); _st.inspTimer = null; }
         U.clear(host);
         _st.inspForId = ch ? ch.id : '';
@@ -672,8 +680,9 @@
 
         var chanCap = visibleChanRows();
         if (_st.chanIdx >= list.length) { _st.chanIdx = Math.max(0, list.length - 1); }
-        if (_st.chanIdx < _st.winTop) { _st.winTop = _st.chanIdx; }
-        else if (_st.chanIdx >= _st.winTop + chanCap) { _st.winTop = _st.chanIdx - chanCap + 1; }
+        // Past the window's edge it moves by half a window (the focused row mid-way), so holding
+        // UP / DOWN rebuilds the rows every few steps instead of at each one.
+        if (_st.chanIdx < _st.winTop || _st.chanIdx >= _st.winTop + chanCap) { _st.winTop = _st.chanIdx - Math.floor(chanCap / 2); }
         _st.winTop = Math.max(0, Math.min(_st.winTop, Math.max(0, list.length - chanCap)));
 
         U.clear(host);
@@ -731,24 +740,20 @@
                 _st.chanIdx = absIdx - 1;
                 _st.lastChanByGrp[_st.grpKey] = _st.chanIdx;
                 if (_st.chanIdx < _st.winTop) { renderChansWindow(true, true); return false; }
-                var prevNode = _st.chanNodes[_st.chanIdx - _st.winTop];
-                renderInspector(prevNode ? prevNode.__chan : null);
-                return prevNode || false;
+                return _st.chanNodes[_st.chanIdx - _st.winTop] || false;   // (its focus draws the inspector)
             };
             row.__goDOWN = function () {
                 if (absIdx >= list.length - 1) { return false; }
                 _st.chanIdx = absIdx + 1;
                 _st.lastChanByGrp[_st.grpKey] = _st.chanIdx;
                 if (_st.chanIdx >= _st.winTop + chanCap) { renderChansWindow(true, true); return false; }
-                var nextNode = _st.chanNodes[_st.chanIdx - _st.winTop];
-                renderInspector(nextNode ? nextNode.__chan : null);
-                return nextNode || false;
+                return _st.chanNodes[_st.chanIdx - _st.winTop] || false;   // (its focus draws the inspector)
             };
-            row.addEventListener('focus', function () {
+            row.__iptvFocus = function () {
                 _st.chanIdx = absIdx;
                 _st.lastChanByGrp[_st.grpKey] = absIdx;
                 renderInspector(ch);
-            }, false);
+            };
 
             host.appendChild(row);
             _st.chanNodes.push(row);
@@ -787,6 +792,7 @@
     function redrawAll(focusCenter, focusTbKey, focusActKey) {
         if (!_st.wrap) { return; }
         U.clear(_st.wrap);
+        _st.inspForId = '';   // (a new inspector pane: drawn afresh)
         var shell = U.el('div', 'iptv-shell');
         renderToolbar(shell);
 
@@ -911,6 +917,12 @@
         if (_st.digits.length >= 3) { jump(); }
         else { _st.digitTimer = setTimeout(jump, 1000); }
         return true;
+    }
+
+    // Every focus move (the remote, setFocus, LEFT back from the inspector…) reaches the row or
+    // category it lands on: the engine marks nodes .focused, it doesn't fire DOM focus events.
+    if (typeof Focus !== 'undefined' && Focus.onFocus) {
+        Focus.onFocus(function (node) { if (_st.mounted && node && typeof node.__iptvFocus === 'function') { node.__iptvFocus(); } });
     }
 
     V.iptvBrowser = iptvBrowser;

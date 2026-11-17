@@ -410,7 +410,7 @@ var PlayerParts = {};
             if (document.body && document.body.classList) { document.body.classList.remove('live-behind'); }
             U.byId('app').className = 'hidden';
             document.body.style.background = 'transparent';
-            showOSD(true);
+            showOSD(false);   // (shown a moment, then hidden: nothing left standing over the picture)
         }
         emitLiveMeta();
     }
@@ -502,7 +502,7 @@ var PlayerParts = {};
     // is what's learned from it (s.stream, through ctx.learnFor); the title, its episodes and
     // whether it's private stay.
     var SOURCE_FIELDS = ['url', 'variantUrl', 'initialQualityHeight', 'yt', 'ytLang', '_headers', 'localSubs', 'localFile', 'subExtra', 'sourceSubs', 'formatInfo', 'onStarted', 'onFailed', 'stream',
-        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_liveChecked', '_avDefaultAudioTried', '_avNoAudioTried', '_avNoVideoTried'];
+        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_liveChecked', '_avDefaultAudioTried', '_avNoAudioTried', '_avNoVideoTried', '_ytLooked'];
     // keep: a source that didn't start gives way to the next (nextSourceOnFail): the same place to
     // resume, and Play from the start as it was.
     function replaceSource(s, keep) {
@@ -1542,7 +1542,9 @@ var PlayerParts = {};
     function nextSourceOnFail(notice, force) {
         var c = S.ctx;
         if (!c || !S.active || (!force && S.playing) || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
-        if (!S.isLive && (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail)) { return false; }
+        // A live channel: only its own variants (the same channel, ctx.variantsOnly: see
+        // Views.zapLiveChannel), whatever Settings says; a title's sources: when Settings says so.
+        if (S.isLive ? !c.variantsOnly : (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail)) { return false; }
         var tried = (c._tried || []).concat([Stremio.sourceId(c.stream)]);
         if (tried.length > NEXT_TRIES) { return false; }
         var n = null;
@@ -1588,6 +1590,18 @@ var PlayerParts = {};
             U.toast(notice ? notice.text : why, notice ? 8000 : undefined);
             exitLater();
         }
+        // A live IPTV link that didn't play may lead to YouTube (an Xtream "Alt" channel): looked
+        // at once, then played through the YouTube resolver.
+        if (c && S.isLive && !c.yt && !c._ytLooked && typeof IPTV !== 'undefined' && IPTV.youTubeEnd && typeof YTPlay !== 'undefined' && YTPlay.resolverUrl) {
+            c._ytLooked = true;
+            IPTV.youTubeEnd(c.url).then(function (page) {
+                if (!S.active || S.ctx !== c || token !== _playToken) { return; }
+                if (!page) { finish(null); return; }
+                U.log('player', 'Live channel leads to YouTube: playing it there');
+                replaceSource({ url: YTPlay.resolverUrl(page, 1080), variantUrl: YTPlay.resolverUrl(page), initialQualityHeight: 1080, yt: page, stream: st }, true);
+            });
+            return;
+        }
         if (!c || !st || c.yt || c.localFile || S.isLive || !/^https?:\/\//i.test(st.url || '')) { finish(null); return; }
         noticeOf(st, finish);
     }
@@ -1627,11 +1641,13 @@ var PlayerParts = {};
     // next source when there's one; else it stops and says so (not while you've paused it). A
     // torrent through a streaming server has longer (Settings › Content › Streaming server: finding
     // people sharing it takes a while).
-    var LIVE_START_MS = 12000;
+    // A live channel with another variant to try gives way sooner (LIVE_START_MS); one without
+    // (and a reconnect's try) has as long as anything else.
+    var LIVE_START_MS = 20000;
     function startMs() {
         var st = S.ctx && S.ctx.stream;
         if (st && st._torrent && typeof Stremio !== 'undefined' && Stremio.server) { return Stremio.server().wait * 1000; }
-        return S.isLive ? LIVE_START_MS : AV_START_MS;
+        return (S.isLive && !_reco.tries && S.ctx && S.ctx.variantsOnly && typeof S.ctx.nextSource === 'function') ? LIVE_START_MS : AV_START_MS;
     }
     function startCheck() {
         if (!S.active || S.playing || !useAV || !_openedAt || Date.now() - _openedAt < startMs()) { return; }
@@ -1810,10 +1826,11 @@ var PlayerParts = {};
     function liveCheck() {
         var ctx = S.ctx;
         if (!ctx || ctx._liveChecked || !liveFixable(ctx)) { return; }
-        // Never open a competing background HTTP connection to raw Xtream live streams (causes
-        // 1-connection IPTV providers to drop or freeze the active AVPlay video/audio stream).
-        var cleanU = (ctx.url || '').replace(/[?#].*$/, '').replace(/\.[a-z0-9]+$/i, '');
-        if (XT_LIVE_PATH.test(cleanU) && !ctx._needLiveLook) { return; }
+        // The look reads HLS only; a raw MPEG-TS link (…/id.ts, an Xtream /live/ link without
+        // .m3u8) isn't looked at: a second connection to it can cut the one playing on a
+        // one-connection IPTV account.
+        var u = ctx.url || '', bare = u.replace(/[?#].*$/, '');
+        if (/\.ts$/i.test(bare) || (XT_LIVE_PATH.test(bare.replace(/\.[a-z0-9]+$/i, '')) && !/\.m3u8?$/i.test(bare))) { return; }
         ctx._liveChecked = true;
         var known = liveKnown(ctx.url);
         if (known && ccOf(known) && known.lv === LIVE_LOOK) { return; }   // (one kept by an older look: looked at again, once)
@@ -1865,8 +1882,10 @@ var PlayerParts = {};
     // the edge. A source that stalls STALL_MAX times within STALL_WINDOW_MS is given up on
     // (VOD lands back on its source list). Checked from the 5 s ticker.
     var STALL_SECS = 12, BUFFER_STALL_SECS = 30, STALL_MAX = 3, STALL_WINDOW_MS = 5 * 60 * 1000, LIVE_AV_GRACE_MS = 5000;
+    // What's playing (hasVideo / hasAudio), and whether the stream has a picture at all
+    // (listsVideo: a video track among all its tracks; a sound-only channel has none).
     function streamTracksSummary() {
-        var hasVideo = false, hasAudio = false;
+        var hasVideo = false, hasAudio = false, listsVideo = false;
         try {
             (avplay.getCurrentStreamInfo() || []).forEach(function (x) {
                 var t = ('' + x.type).toUpperCase(), e = {};
@@ -1875,7 +1894,8 @@ var PlayerParts = {};
                 if (t === 'AUDIO') { hasAudio = true; }
             });
         } catch (er2) {}
-        return { hasVideo: hasVideo, hasAudio: hasAudio };
+        try { listsVideo = (avplay.getTotalTrackInfo() || []).some(function (x) { return ('' + x.type).toUpperCase() === 'VIDEO'; }); } catch (er3) {}
+        return { hasVideo: hasVideo, hasAudio: hasAudio, listsVideo: listsVideo };
     }
     function checkLiveAV(now) {
         var ctx = S.ctx;
@@ -1900,7 +1920,7 @@ var PlayerParts = {};
                     }, function () {});
                 }
             }
-        } else if (!sum.hasVideo && sum.hasAudio && !ctx._avNoVideoTried) {
+        } else if (!sum.hasVideo && sum.hasAudio && sum.listsVideo && !ctx._avNoVideoTried) {
             ctx._avNoVideoTried = true;
             U.log('player', 'Live channel has audio without video (' + where(ctx.url) + ')');
             nextSourceOnFail({ kind: 'no-video', text: U.t('No video on this source') }, true);
@@ -1983,6 +2003,7 @@ var PlayerParts = {};
     // The stream opened again in place: VOD at the same position, live at the edge.
     function reopen(message) {
         _stall.t = -1; _stall.since = 0; _stall.bufSince = 0;
+        if (S.ctx) { S.ctx._avDefaultAudioTried = S.ctx._avNoAudioTried = S.ctx._avNoVideoTried = false; }   // (reopened: checkLiveAV looks again; its tries stay bounded by _tried / _liveFixed)
         S.ctx.resumeSec = S.isLive ? 0 : S.cur;
         if (S.ctx.yt && typeof YTPlay !== 'undefined') { S.ctx.url = YTPlay.resolverUrl(S.ctx.yt, qualityHeight(), true, S.ctx.ytLang); }
         clearStartNote();
@@ -2046,6 +2067,7 @@ var PlayerParts = {};
 
     // ----- for the other parts (and js/player.js) -----
     P.init = init; P.isActive = isActive; P.showOSD = showOSD; P.hideOSD = hideOSD; P.renderOSD = renderOSD; P.play = play; P.playLinked = playLinked; P.replaceSource = replaceSource;
+    P.exitCallback = function () { return _onExit; };   // (another channel played in this session keeps where BACK returns: see zapDrawerChannel)
     P.isLivePlaying = isLivePlaying; P.isBrowseOverlay = isBrowseOverlay; P.setBrowseOverlay = setBrowseOverlay; P.currentLiveId = currentLiveId;
     P.liveMeta = liveMeta; P.onLiveMetaChange = onLiveMetaChange; P.parseFps = parseFps; P.zapLive = zapLive;
     P.updateHint = updateHint; P.startAV = startAV; P.startHTML5 = startHTML5;

@@ -2324,7 +2324,7 @@ function handle(req, res) {
         var plugPost = req.method === 'POST' && path === '/plug/fetch';   // (a Nuvio plugin's request: see plugControl)
         var bakPost = req.method === 'POST' && path === '/bak/write';   // (a backup or the logs for a USB drive: see bakControl)
         if (req.method !== 'GET' && !epgPost && !drmPost && !givePost && !entryOpenPost && !plugPost && !bakPost) { send(res, 405, 'text/plain', 'GET only'); return; }   // (before any work)
-        if (req.url.length > (/^\/epg\//.test(path) ? 32768 : /^\/(fsdl\/add|live\/(open|master)|dav\/(list|walk|sub|mi|open)|smb\/[a-z]+|dlna\/[a-z]+)$/.test(path) ? 8192 : 2048)) { send(res, 414, 'text/plain', 'request too long'); return; }   // (a download's link can be long; a guide's channels, a bitset)
+        if (req.url.length > (/^\/epg\//.test(path) ? 32768 : /^\/(fsdl\/add|live\/(open|master)|dav\/(list|walk|sub|mi|open)|smb\/[a-z]+|dlna\/[a-z]+|m3u\/(load|channels)|xtlive\/list)$/.test(path) ? 8192 : 2048)) { send(res, 414, 'text/plain', 'request too long'); return; }   // (a download's link can be long; a guide's channels, a bitset)
         // (StremioK gave up on it — a screen left, the player closed: what it still waits for is
         // dropped; 'close' before the response finished means that on every Node)
         var leaving = [];
@@ -5581,11 +5581,13 @@ function xtlControl(req, res, path, query) {
                     return;
                 }
                 x.items = items;
-                x.at = Date.now();
                 x.groups = Object.keys(groupSet).length;
                 x.dropped = dropped;
                 x.state = 'ready';
-                xtlSave(x);
+                // Without its categories every channel is in 'Live TV': shown, but neither kept
+                // as fresh nor saved, so the next ask reads the account again.
+                if (catErr) { x.at = 0; log('Xtream live categories not read (' + (catErr.message || 'failed') + '): channels left ungrouped'); }
+                else { x.at = Date.now(); xtlSave(x); }
                 finishWaiters(null);
             });
         });
@@ -5871,16 +5873,17 @@ function m3uReadMeta(x, cb) {
     });
     s.on('error', function () { cb(); });
 }
-function m3uStreamFromDisk(x, groupSet, res) {
+// gone(): the saved list can't be read (swept, cleared): nothing sent yet, the caller reads it again.
+function m3uStreamFromDisk(x, groupSet, res, gone) {
     var f = m3uFile(x.key), fs = require('fs');
-    if (!f) { send(res, 500, 'application/json', JSON.stringify({ error: 'no disk store' })); return; }
-    var s;
-    try { s = fs.createReadStream(f, { highWaterMark: 65536 }); } catch (e) {
-        send(res, 500, 'application/json', JSON.stringify({ error: 'read failed' }));
-        return;
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.write('{"channels":[');
+    if (!f) { gone(); return; }
+    var s, opened = false;
+    try { s = fs.createReadStream(f, { highWaterMark: 65536 }); } catch (e) { gone(); return; }
+    s.on('open', function () {
+        opened = true;
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.write('{"channels":[');
+    });
     var firstLine = true, wroteAny = false, rest = '', dec = new StringDecoder('utf8'), aborted = false;
     res.on('close', function () { aborted = true; try { s.destroy(); } catch (e) {} });
     function handleLine(l) {
@@ -5905,7 +5908,9 @@ function m3uStreamFromDisk(x, groupSet, res) {
         res.end(']}');
     });
     s.on('error', function () {
-        if (!aborted) { try { res.end(']}'); } catch (e) {} }
+        if (aborted) { return; }
+        if (!opened) { gone(); return; }
+        try { res.end(']}'); } catch (e) {}
     });
 }
 function m3uFetch(url, cb) {
@@ -5973,7 +5978,7 @@ function m3uControl(req, res, path, query) {
         send(res, 400, 'application/json', JSON.stringify({ error: 'bad playlist link' }));
         return;
     }
-    var groups = q.groups ? String(q.groups).split(',').map(function (g) { return g.trim(); }).filter(Boolean) : [];
+    var groups = q.groups ? String(q.groups).split(',').map(function (g) { try { return decodeURIComponent(g).trim(); } catch (e) { return g.trim(); } }).filter(Boolean) : [];   // (each name %-encoded: see YTPlay.m3uLoad)
     var groupSet = null;
     if (groups.length) {
         groupSet = Object.create(null);
@@ -5998,7 +6003,11 @@ function m3uControl(req, res, path, query) {
         }
         if (path === '/m3u/channels') {
             if (x.saved && m3uFile(x.key)) {
-                m3uStreamFromDisk(x, groupSet, res);
+                m3uStreamFromDisk(x, groupSet, res, function () {
+                    if (x.retriedGone) { send(res, 502, 'application/json', JSON.stringify({ error: 'saved list unreadable' })); return; }
+                    x.retriedGone = true; x.saved = false; x.items = null; x.at = 0; x.triedFile = true;
+                    m3uControl(req, res, path, query);   // (read from the playlist's link again)
+                });
                 return;
             }
             var list = x.items || [];
@@ -6095,7 +6104,7 @@ function m3uControl(req, res, path, query) {
             x.stale = false;
             x.staleAt = 0;
             x.error = '';
-            x.saved = false;
+            x.saved = false; x.retriedGone = false;
             if (m3uFile(x.key)) {
                 x.items = r.channels;
                 m3uSave(x, r.channels);

@@ -242,6 +242,23 @@ var IPTV = (function () {
         return true;
     }
     function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    // An Xtream playlist's account for catch-up links ({ base, user, pass, ext, offset } or null),
+    // kept until the saved playlists change: the Guide asks for every aired program it draws.
+    var _acctSrc, _acct = null;
+    function catchupAccount(playlistId) {
+        var raw = U.store.get(PLAYLISTS_KEY, null);
+        if (!_acct || raw !== _acctSrc) { _acctSrc = raw; _acct = Object.create(null); }
+        if (!(playlistId in _acct)) {
+            var list = getPlaylists(), i = find(list, playlistId), pl = i !== -1 ? list[i] : null;
+            var x = pl && isXtream(pl.url) ? xtreamParts(pl.url) : null;
+            _acct[playlistId] = (x && x.base && x.user && x.pass) ? {
+                base: x.base, user: x.user, pass: x.pass,
+                ext: xtreamFormat(pl.id) === 'hls' ? 'm3u8' : 'ts',
+                offset: (pl.archiveOffset && isFinite(pl.archiveOffset)) ? pl.archiveOffset : 0
+            } : null;
+        }
+        return _acct[playlistId];
+    }
     function catchupUrl(channelId, progStartSec, progStopSec) {
         var c = _cache && _cache.byId ? _cache.byId[channelId] : null;
         if (!c) { return ''; }
@@ -251,13 +268,11 @@ var IPTV = (function () {
         if (!isFinite(start) || !isFinite(stop) || start <= 0 || stop <= start) { return ''; }
         var now = Date.now() / 1000;
         if (stop > now || start < now - arch.archiveDays * 86400) { return ''; }
-        var list = getPlaylists(), i = find(list, arch._playlistId), pl = i !== -1 ? list[i] : null;
-        if (!pl || !isXtream(pl.url)) { return ''; }
-        var x = xtreamParts(pl.url);
-        if (!x || !x.base || !x.user || !x.pass) { return ''; }
-        var fmt = xtreamFormat(pl.id) === 'hls' ? 'm3u8' : 'ts';
+        var x = catchupAccount(arch._playlistId);
+        if (!x) { return ''; }
+        var fmt = x.ext;
         var durationMin = Math.max(1, Math.round((stop - start) / 60));
-        var offsetHours = (pl.archiveOffset && isFinite(pl.archiveOffset)) ? pl.archiveOffset : 0;
+        var offsetHours = x.offset;
         var d = new Date((start + offsetHours * 3600) * 1000);
         var stamp = d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()) +
             ':' + pad2(d.getUTCHours()) + '-' + pad2(d.getUTCMinutes());
@@ -395,6 +410,15 @@ var IPTV = (function () {
         return h.toString(36);
     }
     function idOf(s, exact) { return slug(s) + '-' + hash(exact === undefined ? s : exact); }
+    // A channel's id within its playlist, the same whichever way it was read (M3U in the TV, the
+    // service's M3U reader, Xtream's API): its tvg-id, else its name; repeats numbered -2, -3…
+    // (favorites, Recent, a channel's remembered audio and format are kept by it).
+    function channelId(c, seen) {
+        var base = 'iptv:' + idOf(c.tvgId || c.name), id = base, n = 2;
+        while (seen[id]) { id = base + '-' + n; n++; }
+        seen[id] = 1;
+        return id;
+    }
 
     function attr(line, re) { var m = line.match(re); return m ? m[1] : ''; }
     // A header a playlist gives a channel, by name: its User-Agent, Referer or Cookie (the ones the
@@ -493,10 +517,7 @@ var IPTV = (function () {
     function m3uReader(max) {
         var r = { channels: [], dropped: 0, title: '', guides: [] }, cur = null, seen = {}, pre = null;   // (pre: #KODIPROP lines before a channel's #EXTINF)
         function add(c) {
-            var base = 'iptv:' + idOf(c.tvgId || c.name);
-            var id = base, n = 2;
-            while (seen[id]) { id = base + '-' + n; n++; }
-            seen[id] = 1; c.id = id;
+            c.id = channelId(c, seen);
             r.channels.push(c);
         }
         r.line = function (raw) {
@@ -601,14 +622,22 @@ var IPTV = (function () {
     // Guide tab; by channel id (its playlist and tvg-id / name), FAV_MAX at most.
     var FAV_KEY = 'stremiok.iptv.favs', FAV_MAX = 300, FAV_CAT = 'iptv_favs';
     function favs() { var f = U.store.get(FAV_KEY, []) || []; return Array.isArray(f) ? f.filter(function (x) { return typeof x === 'string'; }) : []; }
+    // The favorites as a set, made again only when the saved list changes (U.store hands back the
+    // same array until it's written): isFavorite is asked for every channel a list draws.
+    var _favSrc, _favSet = null;
+    function favSet() {
+        var raw = U.store.get(FAV_KEY, null);
+        if (_favSet && raw === _favSrc) { return _favSet; }
+        _favSrc = raw; _favSet = Object.create(null);
+        if (Array.isArray(raw)) { raw.forEach(function (x) { if (typeof x === 'string') { _favSet[x] = true; } }); }
+        return _favSet;
+    }
     function isFavorite(id) {
-        var f = favs();
-        if (f.indexOf(id) !== -1) { return true; }
+        var f = favSet();
+        if (f[id]) { return true; }
         var c = _cache && _cache.byId ? _cache.byId[id] : null;
         if (c && c._mergedIds) {
-            for (var i = 0; i < c._mergedIds.length; i++) {
-                if (f.indexOf(c._mergedIds[i]) !== -1) { return true; }
-            }
+            for (var i = 0; i < c._mergedIds.length; i++) { if (f[c._mergedIds[i]]) { return true; } }
         }
         return false;
     }
@@ -689,7 +718,7 @@ var IPTV = (function () {
     var REGION_PREFIX_RE = /^(?:EU|EUROPE|EUROP|WW|INTL?|WORLD|ALL|GLOBAL)\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/]+\s*/i;
     var DECOR_BOUND = /^[\s\-=_*#|┃│║∣ǀ─═•·.+~<>✦★☆●◆■▲►»«]+|[\s\-=_*#|┃│║∣ǀ─═•·.+~<>✦★☆●◆■▲►»«]+$/g;
     var DIVIDER_WORDS = /^(?:separator|divider|section|group|category|kategori|placeholder|empty|none)$/i;
-    var ADULT_RE = /(?:^|[^0-9])(?:18\+|\+18|₊₁₈)|\b(?:xxx|adult|porn|porno|erotic|erotik|nsfw|sex|brazzers|playboy|hustler|redlight|dorcel|venus)\b/i;
+    var ADULT_RE = /(?:^|[^0-9])(?:18\+|\+18|₊₁₈)|\b(?:xxx|porn|porno|erotic|erotik|nsfw|sex|brazzers|playboy|hustler|redlight|dorcel)\b|\badult\b(?!\s*swim)/i;
 
     function isSeparatorName(rawName) {
         var core = ('' + (rawName || '')).replace(DECOR_BOUND, '').trim();
@@ -700,17 +729,21 @@ var IPTV = (function () {
     function isAdultChannel(c) {
         return ADULT_RE.test((c.group || '') + ' ' + (c.name || ''));
     }
-    function countryFromText(s) {
+    // strict (a channel's name): a 2-letter code counts only with a separator after it ("TR |",
+    // "UK:"), so "CH 5" or "BE IN SPORTS" stay as they are; a group's may be followed by a space
+    // ("UK GENERAL").
+    function countryFromText(s, strict) {
         var t = ('' + (s || '')).trim().replace(REGION_PREFIX_RE, '').replace(/^[\[({|┃│║∣ǀ]+\s*/, '');
         var m = /^([A-Za-z]{2,12})(?:\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/\])]|\s+|$)/.exec(t);
         if (!m) { return ''; }
         var tok = m[1].toUpperCase();
-        if (COUNTRY_WORDS[tok]) { return COUNTRY_WORDS[tok]; }
+        var sepAfter = /^\s*[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/\])]/.test(t.slice(m[1].length));
+        if (COUNTRY_WORDS[tok] && !(strict && tok.length === 2 && !sepAfter)) { return COUNTRY_WORDS[tok]; }
         if (/^[A-Z]{2}$/.test(tok) && !NON_COUNTRY_2[tok] && /[:|\-\u2502\u2503\u250A\u250B\u2551\u01C0\u2223\/\])]/.test(t.slice(tok.length, tok.length + 3))) { return tok; }
         return '';
     }
     function extractCountry(group, name) {
-        return countryFromText(group) || countryFromText(name) || '';
+        return countryFromText(group) || countryFromText(name, true) || '';
     }
     var KEEP_UPPER = { TR: 1, UK: 1, NL: 1, DE: 1, US: 1, FR: 1, ES: 1, IT: 1, AR: 1, TV: 1, HD: 1, FHD: 1, UHD: 1, '4K': 1, '8K': 1, HEVC: 1, VIP: 1, NBA: 1, UFC: 1, NHL: 1, NFL: 1, MLB: 1, F1: 1, PPV: 1, VOD: 1, CNN: 1, BBC: 1, TRT: 1 };
     function cleanGroup(group, country) {
@@ -741,7 +774,8 @@ var IPTV = (function () {
         var isHevc = /\b(?:hevc|h\.?265|x265)\b/i.test(s);
         var fpsM = /\b(50|60)\s*fps\b/i.exec(s);
         var fps = fpsM ? +fpsM[1] : 0;
-        var isBackup = /\b(?:backup|bak|alt|mirror|spare|yedek|link\s*\d+)\b/i.test(s);
+        // ("Alt" / "Bak" / "Link" only numbered or bracketed: "ALT Balaji" is a channel's name)
+        var isBackup = /\b(?:backup|mirror|spare|yedek)\b|\b(?:alt|bak|link)\s*\d+\b|[\[(](?:alt|bak)[\])]/i.test(s);
         var score = base + (fps ? 30 : 0) + (isHevc && res !== 'HEVC' ? 25 : 0) - (isBackup ? 150 : 0);
         var parts = [];
         if (isBackup && !res) { parts.push('Backup'); }
@@ -949,14 +983,14 @@ var IPTV = (function () {
         if (/^http:/i.test(playlist.url)) {   // (Settings › Diagnostics › Logs)
             U.log('iptv', 'Playlist “' + label(playlist) + '” is downloaded over unencrypted http:// — anyone on the network path can see or change it (and ' + (isStalker(playlist) ? 'its MAC address' : 'any username / password in its link') + ')');
         }
-        var src = playlist.url + (playlist.mac ? '#mac=' + playlist.mac : '') + (playlist.genres ? '#genres=' + playlist.genres.join(',') : '') + (playlist.groups ? '#groups=' + playlist.groups.join(',') : '');   // (its saved copy: this portal, MAC and groups')
+        var src = playlist.url + (playlist.mac ? '#mac=' + playlist.mac : '') + (playlist.genres ? '#genres=' + playlist.genres.join(',') : '') + (playlist.groups ? '#groups=' + playlist.groups.map(encodeURIComponent).join(',') : '');   // (its saved copy: this portal, MAC and groups')
         var useXtLive = isXtream(playlist.url) && typeof YTPlay !== 'undefined' && YTPlay.xtliveList && (!YTPlay.installMode || YTPlay.installMode() !== 'browser');
         var useServiceM3U = !isStalker(playlist) && !isXtream(playlist.url) && /^https?:\/\//i.test(playlist.url) && typeof YTPlay !== 'undefined' && YTPlay.m3uLoad && YTPlay.m3uChannels && (!YTPlay.installMode || YTPlay.installMode() !== 'browser');
 
-        function xtLiveToChannel(c) {
+        function xtLiveToChannel(c, seen) {
             var sid = +c.id || 0;
             return {
-                id: 'iptv:' + (sid || idOf(c.tvgId || c.name)),
+                id: channelId(c, seen),
                 type: 'tv',
                 name: c.name || '',
                 group: c.group || 'Live TV',
@@ -970,13 +1004,9 @@ var IPTV = (function () {
         }
 
         function serviceM3UToChannel(c, seen) {
-            var base = 'iptv:' + idOf(c.tvgId || c.name);
-            var id = base, n = 2;
-            while (seen[id]) { id = base + '-' + n; n++; }
-            seen[id] = 1;
             var u = c.url || '';
             var out = {
-                id: id,
+                id: channelId(c, seen),
                 type: c.type || 'tv',
                 name: c.name || '',
                 logo: c.logo || '',
@@ -1022,7 +1052,8 @@ var IPTV = (function () {
                 try { arr = JSON.parse(text); } catch (e) { arr = []; }
                 if (!Array.isArray(arr)) { arr = []; }
                 _sources = null;
-                return Promise.resolve(counted(tagChannels(arr.map(xtLiveToChannel), playlist.id)));
+                var xseen = {};
+                return Promise.resolve(counted(tagChannels(arr.map(function (c) { return xtLiveToChannel(c, xseen); }), playlist.id)));
             }
             return parseM3UAsync(text, maxChannels(), function (n) { progress(playlist.id, n); }).then(function (r) {
                 if (r.dropped) { st.dropped = r.dropped; }   // (kept to what the TV can hold; the rest dropped, and said so)
@@ -1270,8 +1301,9 @@ var IPTV = (function () {
     }
 
     // An Xtream channel's link (…/live/user/pass/id.ext) can lead anywhere, YouTube among them
-    // (a provider's "Alt" channel): looked at (redirects followed, its headers only: the answer
-    // isn't read), within YT_PROBE_MS. Resolves the YouTube page it ends on, or ''. Where it led
+    // (a provider's "Alt" channel): looked at once it failed to play (the player's failedStart; not
+    // before every tune: a second connection to a one-connection account can cut the stream, and
+    // it costs the tune a round trip), redirects followed, its headers only, within YT_PROBE_MS. Resolves the YouTube page it ends on, or ''. Where it led
     // is kept YT_KEEP_MS, or until the playlists reload (reset): a server can renumber its
     // channels, and the same link then leads somewhere else.
     var XTREAM_LIVE = /^https?:\/\/[^\/]+(?:\/[^?#]*)?\/live\/[^\/?#]+\/[^\/?#]+\/\d+(?:\.[a-z0-9]{2,4})?(?:[?#]|$)/i, YT_PROBE_MS = 4000, YT_KEEP_MS = 5 * 60000;
@@ -1307,21 +1339,21 @@ var IPTV = (function () {
             var list = getPlaylists(), pl = list[find(list, c._playlistId)];
             if (isStalker(pl)) { return stalkerStreams(c, pl); }
             var variants = (Array.isArray(c.variants) && c.variants.length > 1) ? c.variants : null;
-            if (!variants) { return plainStreams(c); }
             var out = [];
-            variants.forEach(function (v) {
-                if (v._yt) {
-                    out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: (v.badge ? v.badge + ' · ' : '') + v.rawName });
-                    return;
-                }
-                var vpl = list[find(list, v._playlistId)];
-                if (isStalker(vpl)) { return; }
-                var st = plainStreams(v)[0];
-                var from = sourceOf(v);
-                st.title = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
-                out.push(st);
-            });
-            return out.length ? out : plainStreams(c);
+            if (!variants) { out = plainStreams(c); }
+            else {
+                variants.forEach(function (v) {
+                    var label = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name);
+                    if (v._yt) { out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: label }); return; }
+                    var vpl = list[find(list, v._playlistId)];
+                    if (isStalker(vpl)) { return; }   // (a portal's link is asked for as it plays: not a merged variant)
+                    var st = plainStreams(v)[0], from = sourceOf(v);
+                    st.title = label + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
+                    out.push(st);
+                });
+                if (!out.length) { out = plainStreams(c); }
+            }
+            return out;   // (an Xtream link leading to YouTube is found only if it fails: the player asks youTubeEnd then)
         });
     }
     function plainStreams(c) {
@@ -1377,7 +1409,7 @@ var IPTV = (function () {
         macOf: macOf, stbUa: STB_UA, stalkerPortal: stalkerPortal, stalkerCheck: stalkerCheck, addStalker: addStalker, isStalker: isStalker, stalkerAll: stalkerAll, setStalkerAll: setStalkerAll, stalkerGroups: stalkerGroups, setStalkerGroups: setStalkerGroups,
         xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, m3uGroups: m3uGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
         setArchiveOffset: setArchiveOffset, catchupUrl: catchupUrl,
-        getTidyCfg: getTidyCfg, setTidyCfg: setTidyCfg, tidyChannels: tidyChannels, rebuild: rebuild,
+        getTidyCfg: getTidyCfg, setTidyCfg: setTidyCfg, countryList: normalizeCountryList, youTubeEnd: youTubeEnd, tidyChannels: tidyChannels, rebuild: rebuild,
         isFavorite: isFavorite, setFavorite: setFavorite, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,

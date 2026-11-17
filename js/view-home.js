@@ -1241,9 +1241,7 @@
     function setHomeTab(key) {
         var prev = _homeTab, next = key || _homeTab;
         if (prev === 'tv' && next !== 'tv' && V.iptvLeave) { V.iptvLeave(); }
-        if ((prev === 'tv' || prev === 'guide') && next !== 'tv' && next !== 'guide') {
-            if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
-        }
+        syncLiveOverlay('home', next);
         _homeTab = next; _focusFirstCard = 'new'; _wantTab = null; _wantGuide = null;
     }
     // A tab asked for whose rows are still coming (a first playlist's IPTV tab): shown when they
@@ -1786,6 +1784,13 @@
     V.HOME_TABS = HOME_TABS;
     V.buildRow = buildRow;
     V.currentHomeTab = function () { return _homeTab; };
+    // Live TV behind the menus (Player.isBrowseOverlay) belongs to Home's IPTV and Guide tabs: any
+    // other screen or tab stops it. The one place that rule lives (App.showScreen, setHomeTab).
+    function syncLiveOverlay(screen, tab) {
+        if (screen === 'home' && (tab === 'tv' || tab === 'guide')) { return; }
+        if (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay()) { Player.exit(); }
+    }
+    V.syncLiveOverlay = function (screen) { syncLiveOverlay(screen, _homeTab); };
     V.syncLiveBrowse = function (id) {
         if (_homeTab === 'tv' && V.iptvBackOn) { return V.iptvBackOn(id); }
         if (_homeTab === 'guide' && V.guideBackOn) { return V.guideBackOn(id); }
