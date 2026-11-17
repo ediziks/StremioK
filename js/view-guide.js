@@ -324,12 +324,13 @@
     function playChannel(g, r, best) {
         var c = g.chans[r];
         if (!c || c.guideOnly) { return; }
-        var browseMode = !best && typeof Stremio !== 'undefined' && Stremio.getPrefs && !!Stremio.getPrefs().liveBrowseMode;
+        var livePref = typeof Stremio !== 'undefined' && Stremio.getPrefs && !!Stremio.getPrefs().liveBrowseMode;
+        var browseMode = !best && livePref;   // (the Play key: full screen, through the same live path)
         if (browseMode && typeof Player !== 'undefined' && Player.isLivePlaying && Player.isLivePlaying() && Player.currentLiveId && Player.currentLiveId() === c.id && Player.isBrowseOverlay && Player.isBrowseOverlay()) {
             Player.setBrowseOverlay(false);
             return;
         }
-        if ((browseMode || (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay())) && V.zapLiveChannel) {
+        if ((livePref || (typeof Player !== 'undefined' && Player.isBrowseOverlay && Player.isBrowseOverlay())) && V.zapLiveChannel) {
             var playableList = g.chans.filter(function (ch) { return !ch.guideOnly; });
             var chIdx = 0;
             for (var pIdx = 0; pIdx < playableList.length; pIdx++) { if (playableList[pIdx].id === c.id) { chIdx = pIdx; break; } }

@@ -193,11 +193,7 @@ var App = (function () {
         if (action === 'GUIDE') { guideKey(); return true; }
         if (Player.isActive()) {
             if (!(Player.isBrowseOverlay && Player.isBrowseOverlay())) { return Player.handleKey(action); }
-            if (action === 'STOP') { Player.exit(); return true; }
-            if (action === 'PLAY') { Player.setBrowseOverlay(false); return true; }
-            if (action === 'PAUSE' || action === 'PLAYPAUSE') { if (Player.togglePlay) { Player.togglePlay(); } return true; }
-            if (action === 'CHUP' || action === 'CHDOWN') { if (Player.zap) { Player.zap(action === 'CHUP' ? 1 : -1); } return true; }
-            if (action === 'BLUE') { if (Player.toggleStreamInfo) { Player.toggleStreamInfo(); } return true; }
+            if (liveBehindKey(action)) { return true; }
         }
         if (Views.moveKey && Views.moveKey(action)) { return true; }   // (a Continue Watching card being moved)
         switch (action) {
@@ -239,6 +235,30 @@ var App = (function () {
                 }
                 return true;
         }
+    }
+
+    // Live TV playing behind the menus (Home's IPTV / Guide tab): the player's own keys go to it, the
+    // rest to the menus. true: handled.
+    function liveBehindKey(action) {
+        var cur = Focus.current();
+        switch (action) {
+            case 'STOP': Player.exit(); return true;
+            case 'PLAY':   // (a channel row or guide cell: that one, full screen; else the one playing)
+                if (cur && typeof cur.__onplay === 'function' && !Views.isModalOpen()) { cur.__onplay(); return true; }
+                Player.setBrowseOverlay(false); return true;
+            case 'PAUSE': case 'PLAYPAUSE': if (Player.togglePlay) { Player.togglePlay(); } return true;
+            case 'CHUP': case 'NEXT': if (Player.zap) { Player.zap(1); } return true;
+            case 'CHDOWN': case 'PREV': if (Player.zap) { Player.zap(-1); } return true;
+            case 'BLUE': if (Player.toggleStreamInfo) { Player.toggleStreamInfo(); } return true;
+            case 'RED': case 'GREEN': case 'YELLOW':   // (sound, subtitles, sources: their menus over the picture)
+                Player.setBrowseOverlay(false); Player.handleKey(action); return true;
+        }
+        if (/^NUM\d$/.test(action) && !Views.isModalOpen()) {   // (a channel's number: the IPTV list's selection when on it, else tuned)
+            var n = +action.slice(3);
+            if (_current === 'home' && Views.iptvNumberKey && Views.iptvNumberKey(n)) { return true; }
+            if (Player.numberKey) { Player.numberKey(n); return true; }
+        }
+        return false;
     }
 
     // The remote's GUIDE key: the Guide tab (once a TV guide is read: it's in the top menu), the
@@ -395,7 +415,7 @@ var App = (function () {
     var CSS_RETRY_MS = [1000, 2000, 4000, 8000];
 
     return {
-        start: start, back: back,
+        start: start, back: back, current: function () { return _current; },
         openDetail: openDetail, openLive: openLive, openPerson: openPerson, openDiscover: openDiscover, returnFromLive: returnFromLive, goHome: goHome,
         openSettings: openSettings, openSearch: openSearch, openEntry: openEntry
     };

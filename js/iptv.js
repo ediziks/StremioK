@@ -361,16 +361,32 @@ var IPTV = (function () {
         if (!url) { return false; }
         var list = getPlaylists(), changed = false;
         for (var i = 0; i < list.length; i++) {
-            if (list[i].id === id) { changed = list[i].url !== url; list[i].url = url; break; }
+            if (list[i].id !== id) { continue; }
+            changed = list[i].url !== url;
+            if (changed) {
+                forgetSaved(list[i]);
+                // Another Xtream server or account: its categories (by number) and time offset aren't this one's
+                var a = isXtream(list[i].url) ? xtreamParts(list[i].url) : null, b = isXtream(url) ? xtreamParts(url) : null;
+                if (a && (!b || a.base !== b.base || a.user !== b.user)) { delete list[i].groups; delete list[i].archiveOffset; }
+            }
+            list[i].url = url;
+            break;
         }
         if (!changed) { return false; }
         U.bigStore.remove(CACHE_PREFIX + id);
         savePlaylists(list);
         return true;
     }
+    // The service's saved lists for a playlist (its logins in them): deleted when it goes.
+    function forgetSaved(p) {
+        if (!p || typeof YTPlay === 'undefined' || !YTPlay.iptvForget || isStalker(p)) { return; }
+        var x = isXtream(p.url) ? xtreamParts(p.url) : null;
+        YTPlay.iptvForget(x && x.base && x.user ? { base: x.base, user: x.user } : { u: p.url });
+    }
 
     function removePlaylist(id) {
-        var list = getPlaylists().filter(function (p) { return p.id !== id; });
+        var all = getPlaylists(), list = all.filter(function (p) { return p.id !== id; });
+        all.forEach(function (p) { if (p.id === id) { forgetSaved(p); } });
         U.bigStore.remove(CACHE_PREFIX + id);
         delete _status[id];
         savePlaylists(list);
@@ -390,6 +406,7 @@ var IPTV = (function () {
         return U.bigStore.get(CACHE_PREFIX + id);
     }
     // Returns false when the text didn't fit in storage (it re-downloads next launch).
+    var SVC_SAVED = '\u0001svc:';   // (a saved copy that's the service's channel list, JSON, not the M3U itself)
     function writePersist(id, url, text, at) {
         return U.bigStore.set(CACHE_PREFIX + id, { url: url, text: text, at: at });
     }
@@ -514,8 +531,17 @@ var IPTV = (function () {
     // The M3U reader, a line at a time (so a big playlist can be read in chunks, see
     // parseM3UAsync). max: channels kept; any beyond are only counted (dropped). guides: the TV
     // guides it names (url-tvg / x-tvg-url / tvg-url, several split by commas).
-    function m3uReader(max) {
-        var r = { channels: [], dropped: 0, title: '', guides: [] }, cur = null, seen = {}, pre = null;   // (pre: #KODIPROP lines before a channel's #EXTINF)
+    // only: the group names to keep (the playlist's chosen groups), or null for all. Every group is
+    // still counted (r.groupList: the groups to choose from); channels of others aren't kept and
+    // don't count towards max.
+    function m3uReader(max, only) {
+        var r = { channels: [], dropped: 0, title: '', guides: [], groupList: [] }, cur = null, seen = {}, pre = null, groupAt = {};
+        function counted(c) {   // false: a group not chosen
+            var k = c.type + '|' + c.group;
+            if (!groupAt[k]) { groupAt[k] = { name: c.group, type: c.type, count: 0 }; r.groupList.push(groupAt[k]); }
+            groupAt[k].count++;
+            return !only || !!only[c.group];
+        }   // (pre: #KODIPROP lines before a channel's #EXTINF)
         function add(c) {
             c.id = channelId(c, seen);
             r.channels.push(c);
@@ -532,7 +558,7 @@ var IPTV = (function () {
                 r.title = s.slice(10).trim().slice(0, NAME_MAX);
             }
             if (s.indexOf('#EXTINF') === 0) {
-                var group = attr(s, /group-title="([^"]*)"/i);
+                var group = attr(s, /group-title="([^"]*)"/i).trim();   // (as the groups you choose are kept: trimmed)
                 var kind = attr(s, /tvg-type="([^"]*)"/i);
                 cur = {
                     name: (s.slice(s.lastIndexOf(',') + 1).trim()) || U.t('Channel'),
@@ -547,9 +573,10 @@ var IPTV = (function () {
                 };
                 if (pre) { if (pre.drm) { cur.drm = pre.drm; } if (!cur.ua && pre.ua) { cur.ua = pre.ua; } if (!cur.ref && pre.ref) { cur.ref = pre.ref; } if (!cur.cookie && pre.cookie) { cur.cookie = pre.cookie; } pre = null; }
                 if (/^guide$/i.test(kind)) {   // (StremioK's own mark: a channel watched elsewhere, kept for its TV guide alone; a link after it is ignored)
-                    if (max && r.channels.length >= max) { r.dropped++; cur = null; return; }
                     cur.guideOnly = true; cur.radio = false; cur.type = 'tv';
                     if (!cur.group) { cur.group = 'TV guide'; }
+                    if (!counted(cur)) { cur = null; return; }
+                    if (max && r.channels.length >= max) { r.dropped++; cur = null; return; }
                     add(cur);
                     cur = null;
                 }
@@ -576,11 +603,12 @@ var IPTV = (function () {
                         u = u.slice(0, bar);
                     }
                     if (/^https?:\/\//i.test(u)) {
-                        if (max && r.channels.length >= max) { r.dropped++; cur = null; return; }
                         cur.url = u;
                         cur.radio = !cur.sport && (cur.radio || /\bradio\b/i.test(cur.group) || audioUrl(u));
                         cur.type = cur.sport ? 'sport' : cur.radio ? 'radio' : 'tv';
                         if (!cur.group) { cur.group = cur.sport ? 'Sports' : cur.radio ? 'Live Radio' : 'Live TV'; }
+                        if (!counted(cur)) { cur = null; return; }   // (a group not chosen: before the cap, so chosen ones aren't crowded out)
+                        if (max && r.channels.length >= max) { r.dropped++; cur = null; return; }
                         cur._yt =
                             /^https?:\/\/(?:[^\/]+\.)?youtube\.com(?::\d+)?(?:\/|$)/i.test(u) ||
                             /^https?:\/\/youtu\.be(?::\d+)?(?:\/|$)/i.test(u);
@@ -602,9 +630,9 @@ var IPTV = (function () {
     // responsive while a big playlist is read); onProgress(channels so far). Resolves
     // { channels, dropped }. The text isn't kept once split.
     var PARSE_CHUNK = 3000;
-    function parseM3UAsync(text, max, onProgress) {
+    function parseM3UAsync(text, max, onProgress, only) {
         return new Promise(function (resolve) {
-            var lines = ('' + text).split(/\r?\n/), r = m3uReader(max), i = 0;
+            var lines = ('' + text).split(/\r?\n/), r = m3uReader(max, only), i = 0;
             text = null;
             (function step() {
                 var end = Math.min(lines.length, i + PARSE_CHUNK);
@@ -664,6 +692,31 @@ var IPTV = (function () {
         if (!any && at !== -1) { d.catalogs.splice(at, 1); }
     }
 
+    // ---- What a channel's link really played as (the player's report: Player.liveMeta) ----
+    // { url: { h, f, hevc, at } }, MEASURED_MAX links at most (the oldest go). A merged channel's
+    // variants are ranked by it once known, ahead of what their names say.
+    var MEASURED_KEY = 'stremiok.iptv.measured', MEASURED_MAX = 1500;
+    function measured(url) { var all = U.store.get(MEASURED_KEY, null); return (all && url && all[url]) || null; }
+    function noteMeasured(url, a) {
+        if (!url || !a || !(+a.height > 0)) { return; }
+        var rec = { h: +a.height, f: Math.round(+a.fps || 0), hevc: /hev|hvc|h\.?265/i.test(a.codec || '') ? 1 : 0, at: Date.now() };
+        var all = U.store.get(MEASURED_KEY, {}) || {}, prev = all[url];
+        if (prev && prev.h === rec.h && prev.f === rec.f && prev.hevc === rec.hevc && rec.at - prev.at < 86400000) { return; }
+        all[url] = rec;
+        var urls = Object.keys(all);
+        if (urls.length > MEASURED_MAX) { urls.sort(function (x, y) { return all[x].at - all[y].at; }).slice(0, urls.length - MEASURED_MAX).forEach(function (u) { delete all[u]; }); }
+        U.store.set(MEASURED_KEY, all);
+    }
+    function measuredScore(m) {
+        return (m.h >= 2000 ? 400 : m.h >= 1000 ? 300 : m.h >= 700 ? 200 : m.h >= 400 ? 100 : 50) + (m.f >= 48 ? 30 : 0) + (m.hevc ? 25 : 0);
+    }
+    // "4K", "1080p50", "720p", for the source lists
+    function measuredLabel(url) {
+        var m = measured(url);
+        if (!m) { return ''; }
+        return (m.h >= 2000 ? '4K' : m.h + 'p') + (m.f >= 48 ? (m.h >= 2000 ? ' ' : '') + m.f : '');
+    }
+
     // ---- Smart Playlist Tidier & Variant Merger ----
     function normalizeCountryList(val) {
         if (val === undefined || val === null) { return ['TR', 'UK', 'NL']; }
@@ -720,11 +773,15 @@ var IPTV = (function () {
     var DIVIDER_WORDS = /^(?:separator|divider|section|group|category|kategori|placeholder|empty|none)$/i;
     var ADULT_RE = /(?:^|[^0-9])(?:18\+|\+18|₊₁₈)|\b(?:xxx|porn|porno|erotic|erotik|nsfw|sex|brazzers|playboy|hustler|redlight|dorcel)\b|\badult\b(?!\s*swim)/i;
 
+    // What isn't a letter or a digit in any script: spaces, punctuation (ASCII, Latin-1, general,
+    // CJK, fullwidth), arrows, maths, box drawing, shapes, dingbats, emoji (surrogate pairs) and
+    // their variation selectors, and the letter-like pipe ǀ that playlists draw dividers with.
+    var NOT_A_LETTER = /[\s!-\/:-@\[-`{-~\u00A0-\u00BF\u00D7\u00F7\u01C0\u2000-\u206F\u2190-\u23FF\u2500-\u27BF\u2B00-\u2BFF\u3000-\u303F\uFE00-\uFE0F\uFF01-\uFF0F\uFF1A-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65\uD800-\uDFFF]/g;
     function isSeparatorName(rawName) {
         var core = ('' + (rawName || '')).replace(DECOR_BOUND, '').trim();
         if (!core) { return true; }
         if (DIVIDER_WORDS.test(core)) { return true; }
-        return !/[A-Za-z0-9\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u0600-\u06FF\u4E00-\u9FFF]/.test(core);
+        return !core.replace(NOT_A_LETTER, '');   // (letters or digits in any script: Hebrew, Thai, Hangul, Kana, Devanagari… too)
     }
     function isAdultChannel(c) {
         return ADULT_RE.test((c.group || '') + ' ' + (c.name || ''));
@@ -820,7 +877,7 @@ var IPTV = (function () {
     }
     function toVariantRecord(c, cleanGrp) {
         return {
-            id: c.id, name: c._cleanName || c.name, rawName: c._rawName || c.name,
+            id: c.id, name: c._cleanName || c.name, rawName: c._rawName || c.name, tvgId: c.tvgId || '',
             badge: c._qBadge || 'SD', score: c._qScore || 100,
             url: c.url, group: cleanGrp || c.group, type: c.type,
             ua: c.ua || '', ref: c.ref || '', cookie: c.cookie || '', drm: c.drm || null,
@@ -842,6 +899,7 @@ var IPTV = (function () {
             c._rawGroup = src.group || 'Live TV';
             c._country = extractCountry(c._rawGroup, c._rawName);
             var q = extractQuality(c._rawName);
+            if (!q.res) { q = extractQuality(c._rawName + ' ' + c._rawGroup); }   // (its quality in its group's name: "TR | 4K UHD")
             c._qScore = q.score;
             c._qBadge = q.badge;
             c._cleanName = cleanChannelName(c._rawName, c._country);
@@ -1026,23 +1084,13 @@ var IPTV = (function () {
             return out;
         }
 
-        function filterByGroups(channels) {
-            if (!Array.isArray(playlist.groups) || !playlist.groups.length || isXtream(playlist.url) || isStalker(playlist)) {
-                return channels;
-            }
-            var allow = {};
+        // An M3U's chosen groups as a set (null: all; an Xtream account's and a portal's are read
+        // by their own APIs)
+        function groupSet() {
+            if (!Array.isArray(playlist.groups) || !playlist.groups.length || isXtream(playlist.url) || isStalker(playlist)) { return null; }
+            var allow = Object.create(null);
             playlist.groups.forEach(function (g) { allow[g] = true; });
-            return channels.filter(function (c) { return !!allow[c.group || '']; });
-        }
-
-        function buildGroupList(channels) {
-            var map = {}, list = [];
-            channels.forEach(function (c) {
-                var k = (c.type || 'tv') + '|' + (c.group || '');
-                if (!map[k]) { map[k] = { name: c.group || '', type: c.type || 'tv', count: 0 }; list.push(map[k]); }
-                map[k].count++;
-            });
-            return list;
+            return allow;
         }
 
         function finish(text, at) {
@@ -1052,10 +1100,12 @@ var IPTV = (function () {
                 try { arr = JSON.parse(text); } catch (e) { arr = []; }
                 if (!Array.isArray(arr)) { arr = []; }
                 _sources = null;
-                var xseen = {};
+                var xseen = {}, xmax = maxChannels();
+                if (xmax && arr.length > xmax) { st.dropped = (st.dropped || 0) + (arr.length - xmax); arr = arr.slice(0, xmax); }   // (Settings › IPTV › Largest playlist: as an M3U's)
                 return Promise.resolve(counted(tagChannels(arr.map(function (c) { return xtLiveToChannel(c, xseen); }), playlist.id)));
             }
-            return parseM3UAsync(text, maxChannels(), function (n) { progress(playlist.id, n); }).then(function (r) {
+            var m3uOnly = groupSet();   // (an M3U's chosen groups: picked out as it's read, see m3uReader)
+            return parseM3UAsync(text, maxChannels(), function (n) { progress(playlist.id, n); }, m3uOnly).then(function (r) {
                 if (r.dropped) { st.dropped = r.dropped; }   // (kept to what the TV can hold; the rest dropped, and said so)
                 st.title = r.title || '';
                 st.guides = r.guides || [];
@@ -1066,10 +1116,7 @@ var IPTV = (function () {
                     channels = channels.filter(function (c) { return !XTREAM_VOD.test(c.url); });
                     st.vodLines = r.channels.length - channels.length;
                 }
-                if (!isXtream(playlist.url) && !isStalker(playlist)) {
-                    st.groupList = buildGroupList(channels);
-                    channels = filterByGroups(channels);
-                }
+                if (!isXtream(playlist.url) && !isStalker(playlist)) { st.groupList = r.groupList; }
                 return counted(tagChannels(channels, playlist.id));
             });
         }
@@ -1084,6 +1131,7 @@ var IPTV = (function () {
             return channels;
         }
 
+        var keepText = true;   // (a read the TV shouldn't keep: see xtliveText)
         function serviceM3ULoad() {
             return YTPlay.m3uLoad(playlist.url, playlist.groups, force).then(function (r) {
                 if (!r || r.state === 'failed' || (r.error && !r.stale)) {
@@ -1103,19 +1151,34 @@ var IPTV = (function () {
                 if (!r || !Array.isArray(r.channels)) {
                     throw new Error(U.t('Could not fetch the playlist URL'));
                 }
-                var seen = {}, max = maxChannels();
-                var list = r.channels;
-                if (max && list.length > max) {
-                    st.dropped = (st.dropped || 0) + (list.length - max);
-                    list = list.slice(0, max);
-                }
-                var channels = list.map(function (c) { return serviceM3UToChannel(c, seen); });
-                _sources = null;
-                return counted(tagChannels(channels, playlist.id));
+                // kept on the TV too (as the playlist itself is when the TV reads it): the channels
+                // if the provider or the service can't be reached next time
+                var at = st.fetchedAt || Date.now();
+                if (!st.stale) { writePersist(playlist.id, src, SVC_SAVED + JSON.stringify(r.channels), at).then(function (ok) { st.uncached = !ok; }); }
+                return fromService(r.channels);
             }, function (e) {
                 st.error = (e && e.message) ? e.message : U.t('Could not fetch the playlist URL');
-                return [];
+                return readPersist(playlist.id).then(function (prev) {
+                    if (!(prev && prev.url === src && typeof prev.text === 'string' && prev.text.indexOf(SVC_SAVED) === 0)) { return []; }
+                    var list = null;
+                    try { list = JSON.parse(prev.text.slice(SVC_SAVED.length)); } catch (e2) { list = null; }
+                    if (!Array.isArray(list)) { return []; }
+                    st.stale = true; st.fetchedAt = prev.at || 0;   // (the channels are the saved copy's)
+                    return fromService(list);
+                });
             });
+        }
+        function fromService(list) {
+            var seen = {}, max = maxChannels();
+            var only = groupSet();   // (the service picked them out already, unless too many to name in a link)
+            if (only) { list = list.filter(function (c) { return !!only[('' + (c.group || '')).trim()]; }); }
+            if (max && list.length > max) {
+                st.dropped = (st.dropped || 0) + (list.length - max);
+                list = list.slice(0, max);
+            }
+            var channels = list.map(function (c) { return serviceM3UToChannel(c, seen); });
+            _sources = null;
+            return counted(tagChannels(channels, playlist.id));
         }
 
         if (useServiceM3U) {
@@ -1124,7 +1187,7 @@ var IPTV = (function () {
 
         var saved = force ? Promise.resolve(null) : readPersist(playlist.id);
         return saved.then(function (p) {
-            if (p && p.url === src && typeof p.text === 'string') { return finish(p.text, p.at); }
+            if (p && p.url === src && typeof p.text === 'string' && p.text.indexOf(SVC_SAVED) !== 0) { return finish(p.text, p.at); }
             return fetchIt();
         });
         // A Stalker portal's channels, from the service (see stalkerCheck): its M3U text.
@@ -1150,6 +1213,7 @@ var IPTV = (function () {
             return YTPlay.xtliveList(x.base, x.user, x.pass, xtreamFormat(playlist.id) || 'ts', playlist.groups, force).then(function (r) {
                 if (!r || !Array.isArray(r.channels)) { throw new Error((r && r.error) || U.t('Couldn’t read the Xtream account')); }
                 if (r.dropped) { st.dropped = r.dropped; }
+                if (!r.at) { keepText = false; }   // (read without its categories: not kept, read again next time)
                 return JSON.stringify(r.channels);
             });
         }
@@ -1157,7 +1221,7 @@ var IPTV = (function () {
             var ask = isStalker(playlist) ? stalkerText() : (useXtLive ? xtliveText() : U.getText(playlist.url, 15000 * sizeMb() / 20, playlistMax()));
             return ask.then(function (text) {
                 var at = Date.now();
-                return writePersist(playlist.id, src, text, at).then(function (ok) {
+                return (keepText ? writePersist(playlist.id, src, text, at) : Promise.resolve(false)).then(function (ok) {
                     st.uncached = !ok;
                     return finish(text, at);
                 });
@@ -1171,7 +1235,7 @@ var IPTV = (function () {
                 st.error = msg;
                 // Fall back to this playlist's saved copy so a failed refresh doesn't wipe it.
                 return readPersist(playlist.id).then(function (prev) {
-                    if (!(prev && prev.url === src && typeof prev.text === 'string')) { return []; }
+                    if (!(prev && prev.url === src && typeof prev.text === 'string') || prev.text.indexOf(SVC_SAVED) === 0) { return []; }
                     st.stale = true;   // (the channels are the saved copy's)
                     return finish(prev.text, prev.at);
                 });
@@ -1333,27 +1397,34 @@ var IPTV = (function () {
         return load().then(function (d) {
             var c = d.byId[id];
             if (!c || c.guideOnly) { return []; }
-            if (c._yt) {
-                return [{ url: c.url, _yt: true, ytPage: c.url, name: c.name, title: 'YouTube · ' + c.group }];
+            var list = getPlaylists();
+            function own(x) {   // (one copy: YouTube, a portal's link asked for now, else its link)
+                var xpl = list[find(list, x._playlistId)];
+                if (x._yt) { return Promise.resolve([{ url: x.url, _yt: true, ytPage: x.url, name: x.name || c.name, title: 'YouTube · ' + (x.group || c.group) }]); }
+                if (isStalker(xpl)) { return stalkerStreams(x, xpl); }
+                return Promise.resolve(plainStreams(x));
             }
-            var list = getPlaylists(), pl = list[find(list, c._playlistId)];
-            if (isStalker(pl)) { return stalkerStreams(c, pl); }
             var variants = (Array.isArray(c.variants) && c.variants.length > 1) ? c.variants : null;
-            var out = [];
-            if (!variants) { out = plainStreams(c); }
-            else {
-                variants.forEach(function (v) {
-                    var label = (v.badge ? v.badge + ' · ' : '') + (v.rawName || v.name);
-                    if (v._yt) { out.push({ url: v.url, _yt: true, ytPage: v.url, name: v.name || c.name, title: label }); return; }
-                    var vpl = list[find(list, v._playlistId)];
-                    if (isStalker(vpl)) { return; }   // (a portal's link is asked for as it plays: not a merged variant)
-                    var st = plainStreams(v)[0], from = sourceOf(v);
-                    st.title = label + (v.group ? ' · ' + v.group : '') + (from ? ' · ' + from : '');
-                    out.push(st);
+            if (!variants) { return own(c); }
+            // best first: what each played as when known, else what its name says
+            variants = variants.map(function (v, i) {
+                var m = measured(v.url), backup = /Backup/.test(v.badge || '');
+                return { v: v, i: i, score: m ? measuredScore(m) - (backup ? 150 : 0) : (v.score || 0) };
+            }).sort(function (a, b) { return (b.score - a.score) || (a.i - b.i); }).map(function (x) { return x.v; });
+            return Promise.all(variants.map(function (v) {
+                var q = measuredLabel(v.url) || v.badge || '', label = (q ? q + ' · ' : '') + (v.rawName || v.name), from = sourceOf(v);
+                return own(v).then(function (l) {
+                    return l.map(function (st) {   // (what the source lists show: its quality and the provider's name for it)
+                        st.name = label;
+                        st.title = [st._yt ? 'YouTube' : '', v.group, from].filter(Boolean).join(' · ');
+                        return st;
+                    });
                 });
-                if (!out.length) { out = plainStreams(c); }
-            }
-            return out;   // (an Xtream link leading to YouTube is found only if it fails: the player asks youTubeEnd then)
+            })).then(function (lists) {
+                var out = [];
+                lists.forEach(function (l) { out.push.apply(out, l); });
+                return out.length ? out : own(c);
+            });   // (an Xtream link leading to YouTube is found only if it fails: the player asks youTubeEnd then)
         });
     }
     function plainStreams(c) {
@@ -1409,7 +1480,7 @@ var IPTV = (function () {
         macOf: macOf, stbUa: STB_UA, stalkerPortal: stalkerPortal, stalkerCheck: stalkerCheck, addStalker: addStalker, isStalker: isStalker, stalkerAll: stalkerAll, setStalkerAll: setStalkerAll, stalkerGroups: stalkerGroups, setStalkerGroups: setStalkerGroups,
         xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat, xtreamGroups: xtreamGroups, m3uGroups: m3uGroups, setPlaylistGroups: setPlaylistGroups, setXtreamNoVod: setXtreamNoVod,
         setArchiveOffset: setArchiveOffset, catchupUrl: catchupUrl,
-        getTidyCfg: getTidyCfg, setTidyCfg: setTidyCfg, countryList: normalizeCountryList, youTubeEnd: youTubeEnd, tidyChannels: tidyChannels, rebuild: rebuild,
+        getTidyCfg: getTidyCfg, setTidyCfg: setTidyCfg, countryList: normalizeCountryList, youTubeEnd: youTubeEnd, noteMeasured: noteMeasured, measuredLabel: measuredLabel, tidyChannels: tidyChannels, rebuild: rebuild,
         isFavorite: isFavorite, setFavorite: setFavorite, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,

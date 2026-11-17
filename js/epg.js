@@ -49,7 +49,18 @@ var EPG = (function () {
         }
         return out;
     }
-    function keysOf(c) { return [c.tvgId ? key('i', c.tvgId) : '', key('n', c.name)].filter(Boolean); }
+    // A channel's copies: a tidied channel's merged variants (each from its own playlist, with its
+    // own tvg-id and the name the playlist gave it), else the channel itself.
+    function membersOf(c) { return (c && Array.isArray(c.variants) && c.variants.length) ? c.variants : [c]; }
+    // Its keys in a guide: every copy's tvg-id and playlist name (the guide knows those, not the
+    // tidied name), then its name as shown.
+    function keysOf(c) {
+        var out = [], seen = {};
+        function add(k) { if (k && !seen[k]) { seen[k] = 1; out.push(k); } }
+        membersOf(c).forEach(function (m) { if (m.tvgId) { add(key('i', m.tvgId)); } add(key('n', m.rawName || m._rawName || '')); });
+        add(key('n', c.name));
+        return out;
+    }
 
     // A playlist's guide: yours (p.guide), else the first the playlist names (url-tvg), else an
     // Xtream get.php link's xmltv.php (the same login; also in place of a guide the playlist
@@ -92,9 +103,12 @@ var EPG = (function () {
             if (url && !byGuide[url]) { byGuide[url] = []; }
             if (url && (again === true || again === p.id)) { force[url] = true; }
         });
-        IPTV.channels().forEach(function (c) {
-            var url = _byList[c._playlistId];
-            if (url) { byGuide[url].push.apply(byGuide[url], keysOf(c)); }
+        IPTV.channels().forEach(function (c) {   // (each copy's playlist's guide asked for the channel)
+            var ks = keysOf(c), asked = {};
+            membersOf(c).forEach(function (m) {
+                var url = _byList[m._playlistId];
+                if (url && !asked[url]) { asked[url] = 1; byGuide[url].push.apply(byGuide[url], ks); }
+            });
         });
         var gone = false;
         Object.keys(_guides).forEach(function (url) {   // (a guide no playlist uses any more: dropped)
@@ -146,7 +160,13 @@ var EPG = (function () {
     var _icons = {};     // channel id -> its guide's logo (for one the playlist gives none: logo)
     var _want = {}, _wantTimer = null, _asking = 0, BATCH = 60, PROG_MS = 30 * 60 * 1000;
     function channelOf(id) { return (typeof IPTV !== 'undefined' && IPTV.channel) ? IPTV.channel(id) : null; }
-    function guideOf(c) { var url = c && _byList[c._playlistId], g = url && _guides[url]; return (g && g.state === 'ready') ? url : ''; }
+    // The guide a channel's programs come from: its first copy's playlist with a guide read.
+    function guideOf(c) {
+        if (!c) { return ''; }
+        var ms = membersOf(c);
+        for (var i = 0; i < ms.length; i++) { var url = _byList[ms[i]._playlistId], g = url && _guides[url]; if (g && g.state === 'ready') { return url; } }
+        return '';
+    }
     function forget(url) { Object.keys(_progs).forEach(function (id) { if (_progs[id].url === url) { delete _progs[id]; } }); }
     function want(ids) {
         (ids || []).forEach(function (id) { if (/^iptv:/.test(id || '')) { _want[id] = 1; } });
@@ -199,7 +219,7 @@ var EPG = (function () {
             var out = {}, icons = (r._icons && typeof r._icons === 'object') ? r._icons : {};
             var unk = [];
             chans.forEach(function (c) {
-                if (_byList[c._playlistId] !== url) { unk.push(c.id); return; }   // (its playlist's guide is another now)
+                if (guideOf(c) !== url) { unk.push(c.id); return; }   // (its guide is another now)
                 var ks = keysOf(c), rows = null;
                 for (var i = 0; i < ks.length && !rows; i++) { if (Array.isArray(r[ks[i]])) { rows = r[ks[i]]; } }
                 if (!rows && ks.some(function (k) { return cut[k]; })) { unk.push(c.id); return; }   // (cut off: not answered)

@@ -846,7 +846,7 @@ async function run() {
         await iptvCtx.IPTV.load(true);
         assert.strictEqual(m3uLoadCalled, true);
         assert.strictEqual(m3uChannelsCalled, true);
-        assert.strictEqual(bigStoreWriteCount, 0);
+        assert.strictEqual(bigStoreWriteCount, 1, 'the service\'s channel list is kept on the TV (one write)');
         const st = iptvCtx.IPTV.status(pid);
         assert.strictEqual(st.count, 1);
         assert.strictEqual(st.title, 'Giant Test List');
@@ -855,6 +855,13 @@ async function run() {
         assert.strictEqual(chs.length, 1);
         assert.strictEqual(chs[0].name, 'Channel 1');
         assert.strictEqual(chs[0].ref, 'https://ref.example.com/');
+
+        // Provider or service unreachable next time: the TV's saved copy, marked stale
+        await new Promise((r) => setTimeout(r, 20));
+        iptvCtx.YTPlay.m3uLoad = () => Promise.reject(new Error('no service'));
+        await iptvCtx.IPTV.load(true);
+        assert.strictEqual(iptvCtx.IPTV.channels().length, 1, 'channels from the saved copy');
+        assert.strictEqual(iptvCtx.IPTV.status(pid).stale, true);
 
         // Failed force=1 refresh falls back to saved m3u-<hash>.jsonl with stale: true + error
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stremiok-m3u-'));
@@ -1184,13 +1191,13 @@ async function run() {
                 fn(req, res, pathName, query);
             });
         }
-        // 1. A group-title with a comma, as YTPlay.m3uChannels sends it (each name %-encoded, joined, encoded again)
+        // 1. A group-title with a comma, as YTPlay.m3uChannels sends it
         svc.tokenDir = () => null;
         const u1 = 'http://cdn.example.com/a.m3u';
         svc._m3u[u1] = { key: u1, state: 'ready', title: '', guides: [], groups: [], count: 2, dropped: 0, at: Date.now(),
             items: [{ name: 'Film 1', group: 'Movies, Series', url: 'http://cdn.example.com/1.ts' }, { name: 'News 1', group: 'News', url: 'http://cdn.example.com/2.ts' }],
             saved: false, stale: false, staleAt: 0, error: '', waiters: [] };
-        const groupsParam = encodeURIComponent(['Movies, Series'].map(encodeURIComponent).join(','));
+        const groupsParam = encodeURIComponent(['Movies, Series', ' Kids '].join('\n'));   // (as YTPlay.m3uChannels: one a line)
         const r1 = await call(svc.m3uControl, '/m3u/channels', 'u=' + encodeURIComponent(u1) + '&groups=' + groupsParam);
         assert.deepStrictEqual(JSON.parse(r1.body).channels.map((c) => c.name), ['Film 1'], '"Movies, Series" is one group');
 
@@ -1490,6 +1497,7 @@ async function run() {
         ctx.Player.setBrowseOverlay(false);
         assert.strictEqual(ctx.Player.isBrowseOverlay(), false);
         assert.ok(timeoutsAsked.indexOf(4000) !== -1, 'fullscreen shows the OSD a moment, then hides it (not left standing on an OLED)');
+        assert.strictEqual(ctx.PlayerParts.S.ctx.browseOverlay, false, 'the session keeps the mode: a source switch or reconnect stays full screen');
         assert.ok(!bodyEl.classList.contains('live-behind'));
         assert.strictEqual(byIdMap.app.className, 'hidden');
 
@@ -1805,7 +1813,8 @@ async function run() {
             YTPlay: { installMode: () => 'service', xtliveList: () => Promise.resolve({ state: 'ready', at: Date.now(), count: recs.length, groups: 2, dropped: 0, channels: recs }) }
         });
         const pid = iptvCtx.IPTV.addXtream('http://host:8080', 'user', 'pass');
-        recs = [mk(101, 'Adult Swim', '1', 'adultswim.uk'), mk(102, 'ALT Balaji', '2'), mk(103, 'CH 5 HD', '3'), mk(104, 'Venus TV', '2'), mk(105, 'UK: Sky News HD', '1', 'skynews.uk')];
+        recs = [mk(101, 'Adult Swim', '1', 'adultswim.uk'), mk(102, 'ALT Balaji', '2'), mk(103, 'CH 5 HD', '3'), mk(104, 'Venus TV', '2'), mk(105, 'UK: Sky News HD', '1', 'skynews.uk'),
+            mk(106, 'ערוץ 12', '3'), mk(107, '케이비에스', '3'), mk(108, 'Kanal D HD', '1'), mk(109, 'Kanal D FHD', '1')];
         await iptvCtx.IPTV.load(true);
         const byName = {};
         iptvCtx.IPTV.channels().forEach((c) => { byName[c.name] = c; });
@@ -1814,6 +1823,16 @@ async function run() {
         assert.ok(byName['ALT Balaji'] && byName['ALT Balaji']._qBadge.indexOf('Backup') === -1, '"ALT" in a name is not a backup tag');
         assert.strictEqual(byName['CH 5']._country, '', '"CH 5" is not Switzerland');
         assert.strictEqual(byName['Sky News']._country, 'UK');
+        assert.ok(byName['ערוץ 12'] && byName['케이비에스'], 'names in Hebrew or Hangul are channels, not dividers');
+
+        // Variants ranked by what they really played as, once known (then by their names)
+        const kd = byName['Kanal D'];
+        let order = (await iptvCtx.IPTV.streams(kd.id)).map((s) => s.url);
+        assert.ok(/109\.ts$/.test(order[0]), 'FHD first by its name');
+        iptvCtx.IPTV.noteMeasured(order[1], { height: 2160, fps: 50, codec: 'hev1' });
+        const after = await iptvCtx.IPTV.streams(kd.id);
+        assert.ok(/108\.ts$/.test(after[0].url), 'the copy that played 4K comes first');
+        assert.ok(/^4K 50 · /.test(after[0].name), 'labelled with what it played as: ' + after[0].name);
 
         // The server renumbers its streams: ids (favorites, Recent, per-channel memory) stay
         const skyId = byName['Sky News'].id;
@@ -1828,8 +1847,59 @@ async function run() {
         assert.strictEqual(iptvCtx.IPTV.isFavorite(skyId), false, 'the favorites set follows the saved list');
     });
 
+    await runTest('playlist settings travel with export/import; account change and removal', async () => {
+        const a = loadBrowserScript(['js/iptv.js', 'js/stremio.js']);
+        const pid = a.IPTV.addXtream('http://host:8080', 'user', 'pass');
+        a.Stremio.iptvSetPlaylistGroups(pid, ['5', '7']);
+        a.Stremio.iptvSetXtreamNoVod(pid, true);
+        a.Stremio.iptvSetArchiveOffset(pid, 3);
+        a.U.store.set('stremiok.iptv.favs', ['iptv:' + pid + ':trt-1-abc', 'iptv:gone:x-1']);
+        const text = a.Stremio.exportSetup(['playlists', 'history'], 'test');
+
+        const b = loadBrowserScript(['js/iptv.js', 'js/stremio.js']);
+        b.U.isPlaylistUrl = (u) => !!u && /(\.m3u8?|\/get\.php)$/i.test(u.path || '');   // (util.js's, as the mock U lacks it)
+        b.Stremio.importSetupList(text);
+        const pl = b.IPTV.getPlaylists()[0];
+        assert.ok(pl && pl.id !== pid, 'imported as a new playlist');
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(pl.groups)), ['5', '7']);
+        assert.strictEqual(pl.noVod, true);
+        assert.strictEqual(pl.archiveOffset, 3);
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(b.U.store.get('stremiok.iptv.favs'))), ['iptv:' + pl.id + ':trt-1-abc'], 'favorites renamed to the new playlist; others left out');
+
+        // Another account on the playlist: its categories and offset aren't the new one's
+        const forgot = [];
+        b.YTPlay = { iptvForget: (w) => { forgot.push(w); return Promise.resolve(true); } };
+        b.IPTV.updatePlaylist(pl.id, b.IPTV.xtreamUrl('http://host:8080', 'other', 'pw'));
+        const pl2 = b.IPTV.getPlaylists()[0];
+        assert.strictEqual(pl2.groups, undefined);
+        assert.strictEqual(pl2.archiveOffset, undefined);
+        b.IPTV.removePlaylist(pl.id);
+        assert.strictEqual(forgot.length, 2, 'the service is told to delete the saved lists on change and on removal');
+        assert.strictEqual(forgot[1].user, 'other');
+
+        // The service deletes an account's saved lists
+        const svc = loadService();
+        const os = require('os'), fs = require('fs'), path = require('path');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-forget-'));
+        svc.tokenDir = () => dir;
+        const f = svc.xtlFile('http://host:8080|user|abc|ts|');
+        fs.writeFileSync(f, '{}\n');
+        const other = svc.xtlFile('http://host:8080|someone|abc|ts|');
+        fs.writeFileSync(other, '{}\n');
+        await new Promise((resolve) => svc.iptvForget({ headers: { 'x-stremiok': '1' } }, { writeHead: () => {}, end: () => resolve() }, 'base=' + encodeURIComponent('http://host:8080') + '&user=user'));
+        assert.strictEqual(fs.existsSync(f), false, 'its lists deleted');
+        assert.strictEqual(fs.existsSync(other), true, 'another account\'s kept');
+        fs.rmSync(dir, { recursive: true, force: true });
+
+        // group-title spaces trimmed as the chosen groups are
+        const parser = svc.m3uStreamParser({ max: 10 });
+        parser.feed('#EXTM3U\n#EXTINF:-1 group-title=" Sports ",A\nhttp://x/1.ts\n');
+        assert.strictEqual(parser.end().channels[0].group, 'Sports');
+    });
+
     await runTest('zapLiveChannel fallback chain (collapsed variants + Xtream .ts -> .m3u8 mirror)', async () => {
         let playedCtx = null;
+        const metaFns = [];
         const streamsById = {
             'iptv:ch-4k': [
                 { url: 'http://xt.example.com/live/u/p/101.ts', title: '4K' },
@@ -1854,12 +1924,14 @@ async function run() {
                 catchupUrl: () => null
             },
             EPG: { now: () => null, logo: () => '', onChange: () => {} },
-            Player: { play: (c) => { playedCtx = c; } },
-            App: { showScreen: () => {} },
+            Player: { play: (c) => { playedCtx = c; }, onLiveMetaChange: (fn) => { metaFns.push(fn); return () => {}; } },
+            App: { showScreen: () => {}, current: () => 'home' },
             Stremio: {
                 getStreams: (type, id) => Promise.resolve(streamsById[id] || []),
                 isPlayable: (s) => !!(s && s.url),
                 sourceId: (s) => 'u|' + ((s && s.url) || ''),   // (as Stremio.sourceId: not the bare link)
+                streamName: (s) => s.name || s.title || 'Source',
+                streamDescription: (s) => s.description || (s.name ? s.title : '') || '',
                 streamInfo: () => ({})
             },
             Focus: { current: () => null, setFocus: () => {}, setScope: () => {}, backScope: () => {}, onFocus: () => {} },
@@ -1884,11 +1956,28 @@ async function run() {
             'http://xt.example.com/live/u/p/101.m3u8'
         ], 'every variant then the .m3u8 mirror, each once (no going back to a failed one)');
 
+        // The player's source list: labelled entries, headers as the player takes them
+        assert.strictEqual(playedCtx.streams[0].label, '4K');
+        assert.ok('headers' in playedCtx.streams[0] && playedCtx.streams[0].stream, 'entries carry headers and their stream');
+
         // Sources: a variant picked by its link plays that one
         playedCtx = null;
         await ctx.ViewParts.zapLiveChannel(ch, { browseOverlay: true, streamUrl: 'http://xt.example.com/live/u/p/103.ts' });
         await new Promise((r) => setTimeout(r, 30));
         assert.strictEqual(playedCtx.url, 'http://xt.example.com/live/u/p/103.ts');
+
+        // BACK / STOP before a channel's sources come: it isn't started after all
+        playedCtx = null;
+        let release;
+        streamsById['iptv:slow'] = [{ url: 'http://xt.example.com/live/u/p/201.ts', title: 'HD' }];
+        const realGet = ctx.Stremio.getStreams;
+        ctx.Stremio.getStreams = (type, id) => new Promise((r) => { release = () => r(streamsById[id]); });
+        ctx.ViewParts.zapLiveChannel({ id: 'iptv:slow', name: 'Slow' }, { browseOverlay: false });
+        metaFns.forEach((fn) => fn(null));   // (the player closed: its live meta goes null)
+        release();
+        await new Promise((r) => setTimeout(r, 20));
+        assert.strictEqual(playedCtx, null, 'a channel asked for before the player closed is dropped');
+        ctx.Stremio.getStreams = realGet;
     });
 
     await runTest('player-core AVPlay stop-before-close on live zap, browseOverlay buffering, and live nextSourceOnFail', async () => {

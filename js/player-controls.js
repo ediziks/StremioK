@@ -1301,5 +1301,5 @@
     P.rootMenu = rootMenu;
     P.closeControls = closeControls; P.showSkip = showSkip; P.skipTick = skipTick; P.renderScrub = renderScrub; P.topMenu = topMenu;
     P.closeMenu = closeMenu; P.pushMenu = pushMenu; P.popMenu = popMenu; P.replaceTop = replaceTop; P.applyAspect = applyAspect;
-    P.handleKey = handleKey; P.ytLinksTick = ytLinksTick; P.phoneLink = phoneLink; P.togglePlay = togglePlay; P.toggleStreamInfo = toggleStreamInfo;
+    P.handleKey = handleKey; P.ytLinksTick = ytLinksTick; P.phoneLink = phoneLink; P.togglePlay = togglePlay; P.toggleStreamInfo = toggleStreamInfo; P.numberKey = numberKey;
 })(PlayerParts);

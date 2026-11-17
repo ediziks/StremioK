@@ -599,7 +599,7 @@ var Stremio = (function () {
     var EXPORT_LINE = '#!stremiok ';
     var EXPORT_STORE = ['stremiok.prefs', 'stremiok.feeds', 'stremiok.searchfeeds', 'stremiok.sourcefeeds', 'stremiok.ranking', 'stremiok.server', 'stremiok.formats',
         'stremiok.resblock', 'stremiok.subcfg', 'stremiok.audiocfg', 'stremiok.playercfg', 'stremiok.private', 'stremiok.youtube', 'stremiok.appshortcuts',
-        'stremiok.appsallowed', 'stremiok.aiomanager', 'stremiok.iptv.stalkerall', 'stremiok.iptv.stalkerkeep', 'stremiok.iptv.every', 'stremiok.local.matching', 'stremiok.local.hidden',
+        'stremiok.appsallowed', 'stremiok.aiomanager', 'stremiok.iptv.stalkerall', 'stremiok.iptv.stalkerkeep', 'stremiok.iptv.every', 'stremiok.iptv.size', 'stremiok.local.matching', 'stremiok.local.hidden',
         'stremiok.addonsoff', 'stremiok.integrations'];
     var HISTORY_STORE = ['stremiok.progress', 'stremiok.watched', 'stremiok.cworder', 'stremiok.subhist', 'stremiok.audiohist', 'stremiok.playedsrc', 'stremiok.seriessrc',
         'stremiok.unsuitable', 'stremiok.aspects', 'stremiok.iptv.favs', 'stremiok.local.matches', 'stremiok.local.fixes'];
@@ -639,17 +639,16 @@ var Stremio = (function () {
             lists.filter(function (p) { return !p.mac; }).forEach(function (p) {
                 out.push(p.url);
                 var d = { url: p.url };
-                if (p.name) { d.name = p.name; }
-                if (p.guide) { d.guide = p.guide; }
-                if (p.off) { d.off = true; }
-                if (d.name || d.guide || d.off) { out.push(EXPORT_LINE + 'playlist ' + JSON.stringify(d)); }
+                PLAYLIST_DETAILS.forEach(function (k) { if (p[k]) { d[k] = p[k]; } });
+                d.id = p.id;   // (its favorites' ids name it: matched to the new playlist on import)
+                out.push(EXPORT_LINE + 'playlist ' + JSON.stringify(d));
             });
         }
         if (want.stalker) {
             out.push('');
             lists.filter(function (p) { return p.mac; }).forEach(function (p) {
-                var d = { url: p.url, mac: p.mac };
-                ['name', 'guide', 'genres', 'off'].forEach(function (k) { if (p[k]) { d[k] = p[k]; } });
+                var d = { url: p.url, mac: p.mac, id: p.id };
+                PLAYLIST_DETAILS.concat(['genres']).forEach(function (k) { if (p[k]) { d[k] = p[k]; } });
                 out.push(EXPORT_LINE + 'stalker ' + JSON.stringify(d));
             });
         }
@@ -717,21 +716,40 @@ var Stremio = (function () {
         if (hist.length) { push({ kind: 'history', value: 'history', entries: hist, label: U.t('Your history and progress'), have: false, note: U.t('replaces yours') }); }
         return out;
     }
+    // A playlist's own settings kept by an export (and the id its favorites name: see applySetupEntries).
+    var PLAYLIST_DETAILS = ['name', 'guide', 'off', 'groups', 'noVod', 'archiveOffset'];
     function playlistDetails(id, d) {
         if (typeof d.name === 'string' && d.name.trim()) { iptvRenamePlaylist(id, d.name.trim()); }
         if (typeof d.guide === 'string' && d.guide) { iptvSetPlaylistGuide(id, d.guide); }
         if (d.off === true) { iptvSetPlaylistOff(id, true); }
+        if (Array.isArray(d.groups) && d.groups.length) { iptvSetPlaylistGroups(id, d.groups.map(String).slice(0, 2000)); }
+        if (d.noVod === true) { iptvSetXtreamNoVod(id, true); }
+        if (typeof d.archiveOffset === 'number' && d.archiveOffset) { iptvSetArchiveOffset(id, d.archiveOffset); }
+    }
+    // An export's favorites name its playlists' ids (iptv:<playlist>:<channel>): the ones imported
+    // here have new ids (or are yours already), so they're renamed; the others' are left out.
+    function remapFavorites(favs, ids) {
+        var out = [];
+        (Array.isArray(favs) ? favs : []).forEach(function (f) {
+            var m = /^iptv:([^:]+):(.+)$/.exec(typeof f === 'string' ? f : '');
+            if (m && ids[m[1]]) { out.push('iptv:' + ids[m[1]] + ':' + m[2]); }
+        });
+        return out;
     }
     // Import the chosen lines (parseSetupList's items): what was added, as importSetupList says.
     function applySetupEntries(items) {
         var result = { addons: 0, playlists: 0, omdb: false, tmdb: false, mdblist: false, settings: false, history: false, ignored: 0 };
+        var ids = {};   // (an export's playlist id -> the one here)
+        function same(url, mac) { var h = iptvLists().filter(function (p) { return p.url === url && (p.mac || '') === (mac || ''); })[0]; return h ? h.id : ''; }
         (items || []).forEach(function (it) {
             if (KEY_NAMES[it.kind]) { setIntegration(it.kind, it.value); result[it.kind] = true; }
             else if (it.kind === 'playlist') {
                 var pid = iptvAddPlaylist(it.value);
+                if (it.info && typeof it.info.id === 'string' && (pid || same(it.value))) { ids[it.info.id] = pid || same(it.value); }
                 if (pid) { result.playlists++; if (it.info) { playlistDetails(pid, it.info); } } else { result.ignored++; }
             } else if (it.kind === 'stalker') {
                 var sid = iptvAddStalker(it.info.url, it.info.mac);
+                if (typeof it.info.id === 'string' && (sid || same(it.info.url, IPTV.macOf(it.info.mac)))) { ids[it.info.id] = sid || same(it.info.url, IPTV.macOf(it.info.mac)); }
                 if (!sid) { result.ignored++; return; }
                 result.playlists++;
                 playlistDetails(sid, it.info);
@@ -747,8 +765,13 @@ var Stremio = (function () {
                     } else { U.store.set(key, o.v); }
                 });
                 result.settings = true;
+                if (_hasIptv && IPTV.rebuild) { IPTV.rebuild(); }   // (the playlist tidier's settings among them)
             } else if (it.kind === 'history') {
-                it.entries.forEach(function (o) { var key = 'stremiok.' + o.k; if (HISTORY_STORE.indexOf(key) !== -1) { U.store.set(key, o.v); } });
+                it.entries.forEach(function (o) {
+                    var key = 'stremiok.' + o.k;
+                    if (HISTORY_STORE.indexOf(key) === -1) { return; }
+                    U.store.set(key, key === 'stremiok.iptv.favs' ? remapFavorites(o.v, ids) : o.v);
+                });
                 result.history = true;
             }
             else if (it.kind === 'addon') {

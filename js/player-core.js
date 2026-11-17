@@ -354,6 +354,18 @@ var PlayerParts = {};
         } catch (er2) {}
         return out;
     }
+    // How long a live channel took (Settings › Diagnostics › Logs): from OK (ctx.askedAt, when the
+    // channel was asked for), its sources found, the player opened, to its first frame.
+    function logTune() {
+        var c = S.ctx, now = Date.now();
+        if (c && S.isLive) {
+            var asked = c.askedAt || S.tuneAt;
+            U.log('player', 'Live start “' + (c.name || '') + '”: ' + (now - asked) + ' ms to the first frame' +
+                (c.askedAt ? ' (sources ' + (S.tuneAt - c.askedAt) + ' ms, player ' + (now - S.tuneAt) + ' ms)' : '') +
+                (c.switching ? ', after a source switch' : '') + ' · ' + where(c.url));
+        }
+        S.tuneAt = 0;
+    }
     function isLivePlaying() { return !!(S.active && S.isLive); }
     function isBrowseOverlay() { return !!(S.active && S.isLive && S.browseOverlay); }
     function currentLiveId() { return (S.active && S.isLive && S.ctx && S.ctx.id) ? S.ctx.id : ''; }
@@ -388,6 +400,9 @@ var PlayerParts = {};
             S.actual = playerFormats();
             renderTags();
             emitLiveMeta();
+            // (an IPTV channel's link: what it really plays as, for ranking its variants next time)
+            var st = S.ctx && S.ctx.stream;
+            if (st && st.url && /^iptv:/.test(S.ctx.id || '') && typeof IPTV !== 'undefined' && IPTV.noteMeasured) { IPTV.noteMeasured(st.url, S.actual); }
         }, 2500);
     }
     function setBrowseOverlay(on) {
@@ -398,9 +413,11 @@ var PlayerParts = {};
         }
         on = !!on;
         S.browseOverlay = on;
+        if (S.ctx) { S.ctx.browseOverlay = on; }   // (kept by the session: a source switch or reconnect, play() again, stays where you are)
         if (on) {
             closeControls();
             hideOSD();
+            U.spinner(false);   // (opening / buffering is shown on the IPTV tab's mini-HUD instead)
             if (P.closeChannelDrawer) { P.closeChannelDrawer(true); }
             U.byId('app').className = '';
             document.body.style.background = 'transparent';
@@ -623,6 +640,7 @@ var PlayerParts = {};
         _lastTagsText = '';
         if (_metaPollTimer) { clearTimeout(_metaPollTimer); _metaPollTimer = null; }
         S.browseOverlay = !!(ctx && ctx.browseOverlay && S.isLive);
+        S.tuneAt = S.isLive ? Date.now() : 0;   // (see logTune)
         updateHint();
 
         if (S.browseOverlay) {
@@ -945,6 +963,7 @@ var PlayerParts = {};
                     if (_lastTickMs !== null && ms > _lastTickMs && ms - _lastTickMs < 1500) { _playedMs += ms - _lastTickMs; }
                     _lastTickMs = ms;
                     if (!S.playing && _playedMs >= 1000) { S.playing = true; _reco.tries = 0; }   // (started: playing, not just opened; a reconnect's tries start over)
+                    if (_playedMs > 0 && S.tuneAt) { logTune(); }
                     if (_playedMs >= 2000 && !isNotice()) { reportStart(true); }   // (a notice clip proves nothing about the format)
                     audioOnTick();
                     subsOnTick();
@@ -2013,6 +2032,7 @@ var PlayerParts = {};
 
     function exit() {
         if (!S.active) { return; }
+        var fromOverlay = !!S.browseOverlay;   // (closed while it played behind the menus: told to the exit callback)
         stopLiveLook(); stopFileLook();
         if (U.crumb) { U.crumb('player closed'); }
         if (P.sleepClear) { P.sleepClear(); }   // (the sleep timer: this playback's)
@@ -2062,7 +2082,7 @@ var PlayerParts = {};
         emitLiveMeta();
         // finished: this playback reached the credits/end (and so marked the item watched)
         var cb = _onExit, finished = _creditsHandled; _onExit = null; S.ctx = null;
-        if (cb) { cb({ finished: finished }); }
+        if (cb) { cb({ finished: finished, fromOverlay: fromOverlay }); }
     }
 
     // ----- for the other parts (and js/player.js) -----

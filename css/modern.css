@@ -171,3 +171,7 @@ body.look-modern.bg-light:not(.live-behind) .iptv-insp-title,
 body.look-modern.bg-light:not(.live-behind) .iptv-epg-main-title { color: #111; }
 body.look-modern.bg-light:not(.live-behind) .iptv-epg-desc,
 body.look-modern.bg-light:not(.live-behind) .iptv-next-item { color: #333; }
+body.look-modern.bg-light:not(.live-behind) .iptv-epg-kicker { color: #047857; }   /* (the dark pane's mint and lilac: too faint on white) */
+body.look-modern.bg-light:not(.live-behind) .iptv-insp-sub,
+body.look-modern.bg-light:not(.live-behind) .iptv-row-epg,
+body.look-modern.bg-light:not(.live-behind) .iptv-cat-cnt { color: #3730a3; }

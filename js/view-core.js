@@ -1225,6 +1225,27 @@ var ViewParts = {};
     // Live zapping directly from Home (3-pane IPTV browser or frosted Guide) without leaving
     // #screen-home. Attaches self-contained CH+/CH- & Channel Drawer closures over opts.channels.
     var _zapToken = 0;
+    // A channel asked for is dropped when what asked for it is gone by the time its sources
+    // come: the player closed (BACK / STOP: its live meta goes null), or Home left.
+    if (typeof Player !== 'undefined' && Player.onLiveMetaChange) { Player.onLiveMetaChange(function (m) { if (!m) { _zapToken++; } }); }
+    function zapWanted(token) { return token === _zapToken && (typeof App === 'undefined' || !App.current || App.current() === 'home'); }
+    // A live source as the player takes it (its source menu, a switch, the next one on failure):
+    // its link (YouTube: through the service's resolver), headers, label and details.
+    function liveEntry(st) {
+        var yt = !!(st._yt && typeof YTPlay !== 'undefined'), page = st.ytPage || st.url;
+        return {
+            url: yt ? YTPlay.resolverUrl(page, 1080) : st.url,
+            yt: yt ? page : undefined, variantUrl: yt ? YTPlay.resolverUrl(page) : undefined, initialQualityHeight: yt ? 1080 : undefined,
+            headers: U.sanitizeHeaders(st._headers) || undefined, stream: st,
+            label: Stremio.streamName(st), detail: Stremio.streamDescription ? Stremio.streamDescription(st) : ''
+        };
+    }
+    // Every live channel (a channel picked outside the list being zapped: CH+ / CH- go on through these).
+    function allLiveChannels() {
+        return (typeof IPTV !== 'undefined' && IPTV.channels ? IPTV.channels() : []).filter(function (c) { return c && !c.guideOnly && !c.radio; });
+    }
+    // The last channel asked for in a list: CH+ pressed again before it plays counts from there.
+    var _zapLast = null;
     function zapLiveChannel(ch, opts) {
         if (!ch || !ch.id) { return; }
         opts = opts || {};
@@ -1234,11 +1255,13 @@ var ViewParts = {};
             for (var i = 0; i < list.length; i++) { if (list[i] && list[i].id === ch.id) { idx = i; break; } }
             if (idx < 0) { idx = 0; }
         }
+        _zapLast = { list: list, idx: idx };
+        var askedAt = Date.now();   // (the player logs the time to the first frame from here)
         var browse = !!opts.browseOverlay;
         var token = ++_zapToken;
         if (!browse) { U.spinner(true, U.t('Tuning to {name}…', { name: ch.name })); }
         Stremio.getStreams(ch.type || 'tv', ch.id).then(function (rawList) {
-            if (token !== _zapToken) { return; }
+            if (!zapWanted(token)) { if (token === _zapToken) { U.spinner(false); } return; }
             U.spinner(false);
             var playable = (rawList || []).filter(Stremio.isPlayable);
             if (!playable.length) {
@@ -1248,61 +1271,45 @@ var ViewParts = {};
             // opts.streamUrl: a variant picked by hand (Sources), else the best one
             var chosen = playable[0];
             if (opts.streamUrl) { playable.some(function (s) { if (s.url === opts.streamUrl) { chosen = s; return true; } return false; }); }
-            // Build fallback candidates: all collapsed variants plus HLS mirror if primary Xtream TS fails
+            // Fallback candidates: every variant, then an Xtream .ts link's HLS copy
             var candidates = playable.slice(0);
-            if (chosen && chosen.url && /\.ts(?:[?#]|$)/i.test(chosen.url) && /\/live\/[^\/?#]+\/[^\/?#]+\/\d+\.ts/i.test(chosen.url)) {
+            if (chosen && chosen.url && /\/live\/[^\/?#]+\/[^\/?#]+\/\d+\.ts(?:[?#]|$)/i.test(chosen.url)) {
                 var hlsAlt = Object.assign({}, chosen, {
                     url: chosen.url.replace(/\.ts([?#]|$)/i, '.m3u8$1'),
                     behaviorHints: {},   // (its own source id: Stremio.sourceId, by its link)
-                    title: (chosen.title || ch.name) + ' · HLS'
+                    name: Stremio.streamName(chosen) + ' · HLS'
                 });
                 if (!candidates.some(function (s) { return s.url === hlsAlt.url; })) { candidates.push(hlsAlt); }
             }
-            // The player's next source (nextSourceOnFail): the first candidate not tried yet, tried
-            // holding Stremio.sourceId()s, as the player keeps them.
+            var entries = candidates.map(liveEntry), first = entries[candidates.indexOf(chosen)];
+            // The player's next source (nextSourceOnFail): the first not tried yet, tried holding
+            // Stremio.sourceId()s, as the player keeps them.
             function nextLiveSource(tried) {
-                for (var cIdx = 0; cIdx < candidates.length; cIdx++) {
-                    var cand = candidates[cIdx];
-                    if (cand && cand.url && tried.indexOf(Stremio.sourceId(cand)) === -1) {
-                        return {
-                            total: candidates.length,
-                            source: {
-                                url: cand.url,
-                                stream: cand,
-                                headers: U.sanitizeHeaders(cand._headers)
-                            }
-                        };
-                    }
+                for (var k = 0; k < entries.length; k++) {
+                    if (tried.indexOf(Stremio.sourceId(entries[k].stream)) === -1) { return { total: entries.length, source: entries[k] }; }
                 }
                 return null;
             }
             function zapStep(dir) {
                 if (list.length < 2) { return; }
-                var n = list.length;
+                var n = list.length, from = (_zapLast && _zapLast.list === list) ? _zapLast.idx : idx;   // (counted from a channel still on its way)
                 for (var step = 1; step <= n; step++) {
-                    var nextIdx = (idx + dir * step % n + n) % n;
+                    var nextIdx = (((from + dir * step) % n) + n) % n;
                     var candidate = list[nextIdx];
                     if (candidate && !candidate.guideOnly) {
-                        zapLiveChannel(candidate, {
-                            browseOverlay: Player.isBrowseOverlay(),
-                            channels: list,
-                            idx: nextIdx,
-                            onZapped: opts.onZapped
-                        });
+                        zapLiveChannel(candidate, { browseOverlay: Player.isBrowseOverlay(), channels: list, idx: nextIdx, onZapped: opts.onZapped });
                         return;
                     }
                 }
             }
             function zapToIdFn(targetCh) {
                 if (!targetCh || !targetCh.id) { return; }
-                var found = -1;
-                for (var j = 0; j < list.length; j++) { if (list[j] && list[j].id === targetCh.id) { found = j; break; } }
-                zapLiveChannel(targetCh, {
-                    browseOverlay: Player.isBrowseOverlay(),
-                    channels: found !== -1 ? list : [targetCh],
-                    idx: found !== -1 ? found : 0,
-                    onZapped: opts.onZapped
-                });
+                var inList = list, found = -1;
+                function look(l) { for (var j = 0; j < l.length; j++) { if (l[j] && l[j].id === targetCh.id) { return j; } } return -1; }
+                found = look(inList);
+                if (found === -1) { inList = allLiveChannels(); found = look(inList); }   // (outside this list: CH+ / CH- go on through every channel)
+                if (found === -1) { inList = [targetCh]; found = 0; }
+                zapLiveChannel(targetCh, { browseOverlay: Player.isBrowseOverlay(), channels: inList, idx: found, onZapped: opts.onZapped });
             }
             function zapToNum(num) {
                 var want = (+num || 0) - 1;
@@ -1312,49 +1319,51 @@ var ViewParts = {};
                 }
                 zapLiveChannel(list[want], { browseOverlay: Player.isBrowseOverlay(), channels: list, idx: want, onZapped: opts.onZapped });
             }
-            function onBrowseRet(liveId) {
-                var focusNode = V.syncLiveBrowse ? V.syncLiveBrowse(liveId) : null;
-                if (focusNode) { Focus.setScope(scr('home'), focusNode); }
-            }
-            function onExited() {
-                var node = V.syncLiveBrowse ? V.syncLiveBrowse(ch.id) : null;
+            // Focus back on the channel, on Home's IPTV / Guide tab only, and not taken from where
+            // you put it while it played behind the menus (r.fromOverlay: unless it's gone).
+            function refocus(liveId, keepIfAttached) {
+                if (typeof App !== 'undefined' && App.current && App.current() !== 'home') { return; }
+                var cur = Focus.current();
+                if (keepIfAttached && cur && document.documentElement.contains(cur)) { return; }
+                var node = V.syncLiveBrowse ? V.syncLiveBrowse(liveId) : null;
                 if (node) { Focus.setScope(scr('home'), node); }
             }
-            function playChosen(url, ytPage) {
+            function onBrowseRet(liveId) { refocus(liveId, false); }
+            function onExited(r) { refocus(ch.id, !!(r && r.fromOverlay)); }
+            function playChosen() {
                 Player.play({
-                    url: url,
-                    variantUrl: ytPage ? YTPlay.resolverUrl(ytPage) : undefined,
-                    initialQualityHeight: ytPage ? 1080 : undefined,
-                    yt: ytPage || undefined,
+                    url: first.url, variantUrl: first.variantUrl, initialQualityHeight: first.initialQualityHeight, yt: first.yt,
                     type: ch.type || 'tv',
                     id: ch.id,
                     name: ch.name,
                     poster: ch.logo || '',
                     isLive: true,
                     fromHome: true,
+                    askedAt: askedAt,
                     browseOverlay: browse,
-                    streams: candidates,
+                    streams: entries,
                     stream: chosen,
-                    nextSource: candidates.length > 1 ? nextLiveSource : null,
+                    nextSource: entries.length > 1 ? nextLiveSource : null,
                     variantsOnly: true,   // (its next sources are this channel's own: see nextSourceOnFail)
                     formatInfo: Stremio.streamInfo ? Stremio.streamInfo(chosen) : null,
-                    _headers: U.sanitizeHeaders(chosen._headers) || undefined,
+                    _headers: first.headers,
                     zap: list.length > 1 ? zapStep : null,
                     zapTo: list.length > 1 ? zapToNum : null,
                     zapToId: zapToIdFn,
                     onBrowseReturn: onBrowseRet
                 }, onExited);
+                if (V.iptvPushRecent) { V.iptvPushRecent(ch.id); }   // (Recent: from the IPTV tab and the Guide alike)
                 if (opts.onZapped) { try { opts.onZapped(ch); } catch (e) {} }
             }
-            if (chosen._yt && typeof YTPlay !== 'undefined') {
-                var ytPage = chosen.ytPage || chosen.url;
+            if (first.yt) {
                 YTPlay.ensureService().then(function () {
-                    if (token !== _zapToken) { return; }
-                    playChosen(YTPlay.resolverUrl(ytPage, 1080), ytPage);
+                    if (!zapWanted(token)) { return; }
+                    first = liveEntry(chosen);   // (its resolver link, the service now running)
+                    playChosen();
                 }, function () { U.toast(YTPlay.unavailableMessage('channel'), 4000); });
                 return;
             }
-            playChosen(chosen.url, '');
+            playChosen();
         }, function () {
             if (token !== _zapToken) { return; }   // (a later channel asked for since)
             U.spinner(false);

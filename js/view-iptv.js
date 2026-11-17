@@ -53,6 +53,8 @@
         paneInspEl: null,
         hudEl: null,
         toolbarFirstEl: null,
+        toolbarEl: null,
+        emptyCta: null,
         digitBannerEl: null
     };
 
@@ -132,9 +134,9 @@
             var match = byId[rid];
             if (match && !recSeen[match.id]) { recSeen[match.id] = 1; recList.push(match); }
         });
-        if (recList.length) { groups.push({ key: '__rec__', label: U.t('🕒 Recent'), list: recList }); }
+        if (recList.length) { groups.push({ key: '__rec__', label: U.t('Recent'), list: recList }); }
 
-        groups.push({ key: '__all__', label: U.t('📺 All Channels'), list: live });
+        groups.push({ key: '__all__', label: U.t('All channels'), list: live });
 
         var grpMap = {};
         live.forEach(function (c) {
@@ -153,7 +155,7 @@
         for (var i = 0; i < _st.cats.length; i++) {
             if (_st.cats[i].key === _st.grpKey) { return _st.cats[i]; }
         }
-        return _st.cats[0] || { key: '__all__', label: U.t('📺 All Channels'), list: [] };
+        return _st.cats[0] || { key: '__all__', label: U.t('All channels'), list: [] };
     }
 
     function updateMiniHud() {
@@ -179,10 +181,10 @@
         if (meta.buffering) {
             hud.appendChild(U.el('span', 'iptv-hud-tags', U.t('Buffering…')));
         }
-        var fullBtn = U.el('div', 'iptv-chip focusable', '⛶ ' + U.t('Fullscreen'));
+        var fullBtn = U.el('div', 'iptv-chip focusable', '▣ ' + U.t('Fullscreen'));
         fullBtn.setAttribute('data-tb', 'hud-full');
         fullBtn.__onselect = function () { if (Player.setBrowseOverlay) { Player.setBrowseOverlay(false); } };
-        var stopBtn = U.el('div', 'iptv-chip iptv-chip-stop focusable', '⏹ ' + U.t('Stop'));
+        var stopBtn = U.el('div', 'iptv-chip iptv-chip-stop focusable', U.t('Stop'));
         stopBtn.setAttribute('data-tb', 'hud-stop');
         stopBtn.__onselect = function () {
             Player.exit();   // (its BACK: the IPTV browser on the channel, see zapLiveChannel's onExited)
@@ -205,7 +207,7 @@
         for (var i = 0; i < chips.length; i++) {
             (function (idx, node) {
                 node.__goUP = function () { return undefined; };   // header tabs
-                node.__goDOWN = function () { return _st.chanNodes[0] || _st.catNodes[0] || false; };
+                node.__goDOWN = function () { return _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0] || _st.emptyCta || _st.catNodes[0] || false; };   // (the channel selected, not the window's first)
                 node.__goLEFT = function () { return idx > 0 ? chips[idx - 1] : false; };
                 node.__goRIGHT = function () { return idx < chips.length - 1 ? chips[idx + 1] : false; };
             })(i, chips[i]);
@@ -213,7 +215,7 @@
         _st.toolbarFirstEl = chips[0] || null;
     }
 
-    function renderToolbar(shell) {
+    function renderToolbar() {
         var bar = U.el('div', 'iptv-toolbar');
         var left = U.el('div', 'iptv-tb-left');
 
@@ -241,7 +243,7 @@
 
         var cfg = (typeof IPTV !== 'undefined' && IPTV.getTidyCfg) ? IPTV.getTidyCfg() : { enabled: true, countries: ['TR', 'UK', 'NL'] };
         var countryHint = cfg.countries && cfg.countries.length ? (' · ' + cfg.countries.join('/')) : '';
-        var tidyBtn = U.el('div', 'iptv-chip focusable' + (cfg.enabled ? ' on' : ''), cfg.enabled ? ('✨ ' + U.t('Tidied') + countryHint) : U.t('Raw list'));
+        var tidyBtn = U.el('div', 'iptv-chip focusable' + (cfg.enabled ? ' on' : ''), cfg.enabled ? ('◆ ' + U.t('Tidied') + countryHint) : U.t('Raw list'));
         tidyBtn.setAttribute('data-tb', 'tidy');
         tidyBtn.__onselect = function () {
             if (typeof IPTV === 'undefined' || !IPTV.setTidyCfg) { return; }
@@ -267,8 +269,21 @@
         var hud = U.el('div', 'iptv-hud hidden');
         _st.hudEl = hud;
         bar.appendChild(hud);
-        shell.appendChild(bar);
+        _st.toolbarEl = bar;
+        return bar;
+    }
+    // The toolbar drawn again in place (its chips' counts: Recent after a channel plays), focus
+    // kept on the chip it was on.
+    function refreshToolbar() {
+        var old = _st.toolbarEl;
+        if (!old || !old.parentNode) { return; }
+        var cur = Focus.current(), tb = (cur && old.contains(cur) && cur.getAttribute) ? cur.getAttribute('data-tb') : '';
+        var bar = renderToolbar();
+        old.parentNode.replaceChild(bar, old);
+        wireToolbarNav();
         updateMiniHud();
+        var again = tb ? bar.querySelector('[data-tb="' + tb + '"]') : null;
+        if (again) { Focus.setFocus(again); }
     }
 
     function setActiveGroup(grpKey, focusCenter) {
@@ -285,8 +300,15 @@
             renderCatsWindow(!!(cur && _st.paneCatsEl && _st.paneCatsEl.contains(cur)));
             renderChansWindow(true, false);
         }
+        if (_st.toolbarEl) {   // (the Favorites / Recent / All chip of the group shown: marked)
+            var chips = _st.toolbarEl.querySelectorAll('[data-tb]');
+            for (var c = 0; c < chips.length; c++) {
+                var k = chips[c].getAttribute('data-tb');
+                if (/^__/.test(k)) { chips[c].classList[k === _st.grpKey ? 'add' : 'remove']('on'); }   // (not Filter / Tidied: their own state)
+            }
+        }
         if (focusCenter) {
-            var target = _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0];
+            var target = _st.chanNodes[_st.chanIdx - _st.winTop] || _st.chanNodes[0] || _st.emptyCta;
             if (target) { Focus.setFocus(target); }
         }
     }
@@ -313,7 +335,7 @@
             row.__goRIGHT = function () {
                 if (_st.catDebounce) { clearTimeout(_st.catDebounce); _st.catDebounce = null; }
                 setActiveGroup(g.key, true);
-                return false;
+                return _st.chanNodes.length ? false : (_st.emptyCta || false);   // (an empty list: its button)
             };
             row.__goUP = function () {
                 if (abs === 0) { return _st.toolbarFirstEl || undefined; }
@@ -426,7 +448,8 @@
     function openSourcesModal(ch) {
         if (!ch || !ch.variants || ch.variants.length < 2) { return; }
         var items = ch.variants.map(function (v, idx) {
-            return [String(idx), (v.badge ? '[' + v.badge + '] ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '')];
+            var q = (IPTV.measuredLabel && IPTV.measuredLabel(v.url)) || v.badge;   // (what it played as, once known)
+            return [String(idx), (q ? '[' + q + '] ' : '') + (v.rawName || v.name) + (v.group ? ' · ' + v.group : '')];
         });
         pickList(ch.name + ' · ' + U.t('Sources'), items, '0', function (val) {
             var v = ch.variants[+val || 0];
@@ -465,7 +488,7 @@
         var fav = typeof IPTV !== 'undefined' && IPTV.isFavorite && IPTV.isFavorite(ch.id);
         var items = [['full', '▶  ' + U.t('Watch fullscreen')]];
         if (ch.variants && ch.variants.length > 1) {
-            items.push(['sources', '🔀  ' + U.t('Choose source ({n})', { n: ch.variants.length })]);
+            items.push(['sources', '≡  ' + U.t('Choose source ({n})', { n: ch.variants.length })]);
         }
         items.push(['fav', fav ? ('★  ' + U.t('Remove from favorites')) : ('★  ' + U.t('Add to favorites'))]);
         if (ch.archive && ch.archiveDays > 0 && typeof EPG !== 'undefined' && EPG.hasGuide && EPG.hasGuide(ch.id)) {
@@ -478,16 +501,37 @@
             IPTV.setFavorite(ch.id, !fav);
             U.toast(fav ? U.t('Removed from favorites') : U.t('Added to ★ Favorites'), 2200);
             refreshAddonRows('local:iptv');
-            redrawData(false, ch.id);
+            redrawData(true, ch.id);   // (focus back on the channel)
         });
     }
 
+    // A channel played (OK, CH+ / CH-, the Guide): Recent and the chips' counts again, the
+    // playing marks, and the selection following it while you're in the channel list.
     function onChannelZapped(ch) {
-        if (ch && ch.id) { pushRecent(ch.id); }
-        _st.chanNodes.forEach(function (node) {
-            if (!node.__chan || !node.classList) { return; }
-            node.classList[isChannelPlaying(node.__chan) ? 'add' : 'remove']('playing');
-        });
+        if (!_st.mounted) { return; }
+        var built = buildGroups(_st.filterText);
+        _st.cats = built.groups;
+        if (_st.grpKey !== '__rec__') {   // (Recent shown: kept as it is under you, not reordered)
+            var g = currentGroupObj();
+            if (g.key === _st.grpKey) { _st.chans = g.list || []; }
+        }
+        for (var i = 0; i < _st.cats.length; i++) { if (_st.cats[i].key === _st.grpKey) { _st.catIdx = i; break; } }
+        var cur = Focus.current();
+        renderCatsWindow(!!(cur && _st.paneCatsEl && _st.paneCatsEl.contains(cur)));
+        refreshToolbar();
+        var inList = !!(cur && _st.paneChansEl && _st.paneChansEl.contains(cur)), at = -1;
+        if (inList && ch) {
+            for (var j = 0; j < _st.chans.length; j++) { var c = _st.chans[j]; if (c.id === ch.id || (Array.isArray(c._mergedIds) && c._mergedIds.indexOf(ch.id) !== -1)) { at = j; break; } }
+        }
+        if (at !== -1) {
+            _st.chanIdx = at; _st.lastChanByGrp[_st.grpKey] = at;
+            renderChansWindow(true, true);
+        } else {
+            _st.chanNodes.forEach(function (node) {
+                if (!node.__chan || !node.classList) { return; }
+                node.classList[isChannelPlaying(node.__chan) ? 'add' : 'remove']('playing');
+            });
+        }
         updateMiniHud();
         renderInspector(_st.chans[_st.chanIdx], null, true);
     }
@@ -499,7 +543,6 @@
             Player.setBrowseOverlay(false);
             return;
         }
-        pushRecent(ch.id);
         if (V.zapLiveChannel) {
             V.zapLiveChannel(ch, {
                 browseOverlay: browseMode,
@@ -517,6 +560,8 @@
         var host = _st.paneInspEl;
         if (!host) { return; }
         if (!force && !focusActKey && ch && ch.id === _st.inspForId && host.firstChild) { return; }
+        var had = Focus.current();   // (drawn again under its buttons' focus: kept on the same button)
+        if (!focusActKey && had && host.contains(had) && had.getAttribute) { focusActKey = had.getAttribute('data-act'); }
         if (_st.inspTimer) { clearTimeout(_st.inspTimer); _st.inspTimer = null; }
         U.clear(host);
         _st.inspForId = ch ? ch.id : '';
@@ -545,7 +590,7 @@
 
         var actions = U.el('div', 'iptv-insp-actions');
         var playingHere = isChannelPlaying(ch);
-        var playBtn = U.el('div', 'iptv-act-btn primary focusable', playingHere ? ('⛶ ' + U.t('Fullscreen')) : ('▶ ' + U.t('Watch')));
+        var playBtn = U.el('div', 'iptv-act-btn primary focusable', playingHere ? ('▣ ' + U.t('Fullscreen')) : ('▶ ' + U.t('Watch')));
         playBtn.setAttribute('data-act', 'play');
         playBtn.__onselect = function () { tuneChannel(ch, _st.chanIdx, false); };
 
@@ -561,12 +606,12 @@
         actions.appendChild(favBtn);
 
         if (ch.variants && ch.variants.length > 1) {
-            var srcBtn = U.el('div', 'iptv-act-btn focusable', '🔀 ' + U.t('Sources') + ' (' + ch.variants.length + ')');
+            var srcBtn = U.el('div', 'iptv-act-btn focusable', '≡ ' + U.t('Sources') + ' (' + ch.variants.length + ')');
             srcBtn.setAttribute('data-act', 'sources');
             srcBtn.__onselect = function () { openSourcesModal(ch); };
             actions.appendChild(srcBtn);
         }
-        if (ch.archive && ch.archiveDays > 0) {
+        if (ch.archive && ch.archiveDays > 0 && typeof EPG !== 'undefined' && EPG.hasGuide && EPG.hasGuide(ch.id)) {   // (its programs come from the guide)
             var cuBtn = U.el('div', 'iptv-act-btn focusable', '↺ ' + U.t('Catch-up'));
             cuBtn.setAttribute('data-act', 'catchup');
             cuBtn.__onselect = function () { openCatchupModal(ch); };
@@ -669,6 +714,7 @@
                 if (_st.filterText) { _st.filterText = ''; redrawData(true); return; }
                 App.openSettings();
             };
+            _st.emptyCta = cta;
             cta.__goUP = function () { return _st.toolbarFirstEl || undefined; };
             cta.__goLEFT = function () { return _st.catNodes[0] || false; };
             empty.appendChild(cta);
@@ -678,6 +724,7 @@
             return;
         }
 
+        _st.emptyCta = null;
         var chanCap = visibleChanRows();
         if (_st.chanIdx >= list.length) { _st.chanIdx = Math.max(0, list.length - 1); }
         // Past the window's edge it moves by half a window (the focused row mid-way), so holding
@@ -794,7 +841,8 @@
         U.clear(_st.wrap);
         _st.inspForId = '';   // (a new inspector pane: drawn afresh)
         var shell = U.el('div', 'iptv-shell');
-        renderToolbar(shell);
+        shell.appendChild(renderToolbar());
+        updateMiniHud();
 
         var cols = U.el('div', 'iptv-cols');
         var left = U.el('div', 'iptv-pane iptv-pane-cats glass-pane');
@@ -854,6 +902,7 @@
         if (_st.epgUiTimer) { clearTimeout(_st.epgUiTimer); _st.epgUiTimer = null; }
         if (_st.inspTimer) { clearTimeout(_st.inspTimer); _st.inspTimer = null; }
         if (_st.digitTimer) { clearTimeout(_st.digitTimer); _st.digitTimer = null; }
+        _st.digits = '';   // (a number half typed doesn't carry over to the next visit)
         if (_st.unsubLive) { _st.unsubLive(); _st.unsubLive = null; }
     }
 
@@ -925,6 +974,7 @@
         Focus.onFocus(function (node) { if (_st.mounted && node && typeof node.__iptvFocus === 'function') { node.__iptvFocus(); } });
     }
 
+    V.iptvPushRecent = pushRecent;
     V.iptvBrowser = iptvBrowser;
     V.iptvLeave = iptvLeave;
     V.iptvBackOn = iptvBackOn;

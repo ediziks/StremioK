@@ -1,7 +1,8 @@
 # Next steps after the APL TV parity work (ranked)
 
 **Date:** 2026-11-17
-**Branch:** `feat/apltv-iptv-parity` (22 review fixes uncommitted at time of writing)
+**Branch:** `feat/apltv-iptv-parity`
+**Status (2026-11-17):** Waves 0.1, 0.4 and 1–4 done (not yet tested on the TV). Still open: 0.2 personal fork, 0.3 TV test, Wave 5.
 **Inputs:** the high-effort code review, three focused read-only reviews (live playback, IPTV data and service, UI), and the source-list and ranking check.
 
 Size: S = under an hour, M = a few hours, L = a day or more.

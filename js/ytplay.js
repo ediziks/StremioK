@@ -234,16 +234,30 @@ var YTPlay = (function () {
             return U.getJSON(PROXY + '/xtlive/list?base=' + encodeURIComponent(base) + '&user=' + encodeURIComponent(user) + '&pass=' + encodeURIComponent(pass) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
         });
     }
-    // A playlist's chosen groups for the service: each name %-encoded before they're joined by
-    // commas (a group-title is free text: "Movies, Series" is one group), the whole encoded again.
-    function groupsParam(groups) { return encodeURIComponent(groups.map(function (g) { return encodeURIComponent(g); }).join(',')); }
+    // A playlist's chosen groups for the service: one a line (a group-title is free text, commas
+    // and all, never a line break). '' when too many for a link (GROUPS_LINK_MAX): the service
+    // then sends every group's channels and the TV keeps the chosen ones (IPTV's serviceM3ULoad).
+    var GROUPS_LINK_MAX = 6000;
+    function groupsParam(groups) {
+        var q = encodeURIComponent(groups.join('\n'));
+        return q.length <= GROUPS_LINK_MAX ? q : '';
+    }
     function m3uLoad(u, groups, force) {
         if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
-        var more = (groups && groups.length ? '&groups=' + groupsParam(groups) : '') +
+        var gq = groups && groups.length ? groupsParam(groups) : '';
+        var more = (gq ? '&groups=' + gq : '') +
             (force ? '&force=1' : '');
         return ensureService().then(entryAuth).then(function (a) {
             return U.getJSON(PROXY + '/m3u/load?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 4 * 1048576, null, a.h);
         });
+    }
+    // A playlist removed or changed: the service's saved lists for it deleted (best effort).
+    function iptvForget(what) {
+        if (MODE === 'browser') { return Promise.resolve(false); }
+        var q = what.u ? 'u=' + encodeURIComponent(what.u) : 'base=' + encodeURIComponent(what.base) + '&user=' + encodeURIComponent(what.user);
+        return ensureService().then(entryAuth).then(function (a) {
+            return U.getJSON(PROXY + '/iptv/forget?' + q + a.q, 10000, 4096, null, a.h);
+        }).then(function () { return true; }, function () { return false; });
     }
     function m3uGroups(u, force) {
         if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
@@ -254,7 +268,8 @@ var YTPlay = (function () {
     }
     function m3uChannels(u, groups) {
         if (MODE === 'browser') { return Promise.reject(new Error('no service')); }
-        var more = groups && groups.length ? '&groups=' + groupsParam(groups) : '';
+        var gq = groups && groups.length ? groupsParam(groups) : '';
+        var more = gq ? '&groups=' + gq : '';
         return ensureService().then(entryAuth).then(function (a) {
             return U.getJSON(PROXY + '/m3u/channels?u=' + encodeURIComponent(u) + more + a.q, 6 * 60000, 48 * 1048576, null, a.h);
         });
@@ -413,6 +428,6 @@ var YTPlay = (function () {
         return MODE === 'tizenbrew' ? U.t('TizenBrew module') : MODE === 'wgt' ? U.t('Sideloaded app (.wgt)') : U.t('Browser (development)');
     }
 
-    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, m3uLoad: m3uLoad, m3uGroups: m3uGroups, m3uChannels: m3uChannels, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryOpenGroups: entryOpenGroups, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
+    return { ensureService: ensureService, resolverUrl: resolverUrl, infoUrl: infoUrl, canPlay: canPlay, liveOpen: liveOpen, fileOpen: fileOpen, mediaInfo: mediaInfo, pluginNet: pluginNet, hlsMaster: hlsMaster, aiomAddons: aiomAddons, stalkerList: stalkerList, stalkerVod: stalkerVod, drmLicense: drmLicense, stalkerPlayUrl: stalkerPlayUrl, stalkerGenres: stalkerGenres, stalkerLink: stalkerLink, xtvodAsk: xtvodAsk, xtliveCats: xtliveCats, xtliveList: xtliveList, m3uLoad: m3uLoad, m3uGroups: m3uGroups, m3uChannels: m3uChannels, iptvForget: iptvForget, epgLoad: epgLoad, epgGet: epgGet, epgFiles: epgFiles, epgClear: epgClear, entryOpen: entryOpen, entryOpenGroups: entryOpenGroups, entryGive: entryGive, bakWrite: bakWrite, bakRead: bakRead, entrySeen: entrySeen, entryPoll: entryPoll, entryClose: entryClose, subsUrl: subsUrl, audioLang: audioLang, setAudioLang: setAudioLang, installMode: function () { return MODE; },
         installLabel: installLabel, unavailableMessage: unavailableMessage, isRunning: isRunning, port: PORT };
 })();

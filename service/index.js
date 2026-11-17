@@ -2324,12 +2324,12 @@ function handle(req, res) {
         var plugPost = req.method === 'POST' && path === '/plug/fetch';   // (a Nuvio plugin's request: see plugControl)
         var bakPost = req.method === 'POST' && path === '/bak/write';   // (a backup or the logs for a USB drive: see bakControl)
         if (req.method !== 'GET' && !epgPost && !drmPost && !givePost && !entryOpenPost && !plugPost && !bakPost) { send(res, 405, 'text/plain', 'GET only'); return; }   // (before any work)
-        if (req.url.length > (/^\/epg\//.test(path) ? 32768 : /^\/(fsdl\/add|live\/(open|master)|dav\/(list|walk|sub|mi|open)|smb\/[a-z]+|dlna\/[a-z]+|m3u\/(load|channels)|xtlive\/list)$/.test(path) ? 8192 : 2048)) { send(res, 414, 'text/plain', 'request too long'); return; }   // (a download's link can be long; a guide's channels, a bitset)
+        if (req.url.length > (/^\/epg\//.test(path) ? 32768 : /^\/(fsdl\/add|live\/(open|master)|dav\/(list|walk|sub|mi|open)|smb\/[a-z]+|dlna\/[a-z]+|m3u\/(load|channels|groups)|xtlive\/(list|cats)|iptv\/forget)$/.test(path) ? 8192 : 2048)) { send(res, 414, 'text/plain', 'request too long'); return; }   // (a download's link can be long; a guide's channels, a bitset)
         // (StremioK gave up on it — a screen left, the player closed: what it still waits for is
         // dropped; 'close' before the response finished means that on every Node)
         var leaving = [];
         function leaveAll() { var l = leaving; leaving = []; l.forEach(function (f) { try { f(); } catch (e) {} }); }
-        if (!isFs && path !== '/dav/walk' && path !== '/smb/walk' && path !== '/dlna/walk' && !/^\/live\/[0-9a-f]{32}\/[tf]$/.test(path) && !/^\/net\/[0-9a-f]{32}\/f$/.test(path)) {   // (a folder's walk, a raw channel's or a file's stream: their own limits)
+        if (!isFs && path !== '/dav/walk' && path !== '/smb/walk' && path !== '/dlna/walk' && !/^\/(xtlive|m3u)\//.test(path) && !/^\/live\/[0-9a-f]{32}\/[tf]$/.test(path) && !/^\/net\/[0-9a-f]{32}\/f$/.test(path)) {   // (a folder's walk, a raw channel's or a file's stream, an IPTV list's first read (M3U_MS / XTV_MS): their own limits)
             var deadline = setTimeout(function () { if (!res.headersSent) { send(res, 504, 'text/plain', 'took too long'); } leaveAll(); }, REQ_MS);
             res.on('finish', function () { clearTimeout(deadline); });
             res.on('close', function () { clearTimeout(deadline); if (!res.finished) { leaveAll(); } });
@@ -2396,7 +2396,8 @@ function handle(req, res) {
         if (/^\/dlna\//.test(path)) { dlnaControl(req, res, path, parts[1], leaving); return; }   // (a DLNA media server: see dlnaControl)   // (a network folder's file, for the player: its ticket)   // (a network folder: see davControl)
         if (path === '/aiom/addons') { aiomControl(req, res, parts[1], leaving); return; }
         if (path === '/xtvod/list' || path === '/xtvod/find') { xtvControl(req, res, path, parts[1]); return; }   // (an Xtream account's films and series: see xtvControl)
-        if (path === '/xtlive/cats' || path === '/xtlive/list') { xtlControl(req, res, path, parts[1]); return; }   // (an Xtream account's live TV categories & channels: see xtlControl)
+        if (path === '/xtlive/cats' || path === '/xtlive/list') { xtlControl(req, res, path, parts[1]); return; }
+        if (path === '/iptv/forget') { iptvForget(req, res, parts[1]); return; }   // (a removed playlist's saved lists)   // (an Xtream account's live TV categories & channels: see xtlControl)
         if (path === '/m3u/load' || path === '/m3u/groups' || path === '/m3u/channels') { m3uControl(req, res, path, parts[1]); return; }   // (large M3U playlist: streaming parser & disk store)
         if (path === '/stalker/list' || path === '/stalker/link' || path === '/stalker/genres' || path === '/stalker/vod' || path === '/stalker/play') { stalkerControl(req, res, path, parts[1], leaving); return; }   // (a Stalker portal: see stalkerControl)   // (AIOManager's addons: see aiomControl)   // (a live channel's sound repacked: see liveControl)   // (the phone's one-time page: see below)
         if (path === '/fsfile') {   // a USB file over HTTP, with Range: the player reads a big one from here (see fsfile in the header)
@@ -5247,7 +5248,7 @@ function xtvGet(url, onText, cb) {
 // title, written and read in small pieces (the service also relays live channels, YouTube and
 // guides: nothing here holds it up for long). Saved lists not used for XTV_FILE_MS are deleted.
 function xtvFile(key) { var d = tokenDir(); return d ? d + '/xtv-' + epgHash(key).toString(36) + '.jsonl' : null; }
-var _xtvSwept = false, XTV_FILES = /^(?:xt[vl]|m3u)-[0-9a-z]+\.jsonl?(\.part)?$/;
+var _xtvSwept = false, XTV_FILES = /^(?:xt[vl]|m3u)-[0-9a-z-]+\.jsonl?(\.part)?$/;
 function xtvSweep() {
     if (_xtvSwept) { return; }
     _xtvSwept = true;
@@ -5455,7 +5456,31 @@ function xtLiveRecord(o, catMap, base, user, pass, fmt) {
         archiveDays: +o.tv_archive_duration || 0
     };
 }
-function xtlFile(key) { var d = tokenDir(); return d ? d + '/xtl-' + epgHash(key).toString(36) + '.jsonl' : null; }
+// xtl-<account>-<list>: an account's lists (its categories, TS / HLS) found by their account's
+// part when the playlist is removed (iptvForget).
+function xtlAccount(base, user) { return epgHash(String(base || '').replace(/\/+$/, '') + '|' + user).toString(36); }
+function xtlFile(key) {
+    var d = tokenDir(), p = String(key).split('|');
+    return d ? d + '/xtl-' + xtlAccount(p[0], p[1]) + '-' + epgHash(key).toString(36) + '.jsonl' : null;
+}
+// A playlist removed (or its link changed): its saved lists go now, with the logins in them
+// (not days later, swept). ?u= an M3U's link, or ?base=&user= an Xtream account.
+function iptvForget(req, res, query) {
+    if (!entryAllowed(req, query)) { send(res, 403, 'text/plain', 'not allowed (token)'); return; }
+    var q = {}, d = tokenDir(), fs = require('fs'), gone = 0;
+    String(query || '').split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) { try { q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (e) {} } });
+    if (q.u) {
+        delete _m3u[q.u];
+        var f = m3uFile(q.u);
+        if (f) { [f, f + '.part'].forEach(function (x) { try { fs.unlinkSync(x); gone++; } catch (e) {} }); }
+    }
+    if (q.base && q.user) {
+        var base = String(q.base).replace(/\/+$/, ''), acc = 'xtl-' + xtlAccount(base, q.user) + '-';
+        Object.keys(_xtl).forEach(function (k) { if (_xtl[k].base === base && _xtl[k].user === q.user) { delete _xtl[k]; } });
+        if (d) { try { fs.readdirSync(d).forEach(function (n) { if (n.indexOf(acc) === 0) { try { fs.unlinkSync(d + '/' + n); gone++; } catch (e) {} } }); } catch (e2) {} }
+    }
+    send(res, 200, 'application/json', JSON.stringify({ removed: gone }));
+}
 function xtlSave(x) {
     var f = xtlFile(x.key), fs = require('fs'), items = x.items, at = 0, failed = false, s;
     if (!f) { return; }
@@ -5733,7 +5758,7 @@ function m3uStreamParser(opts) {
             r.title = s.slice(10).trim().slice(0, M3U_NAME_MAX);
         }
         if (s.indexOf('#EXTINF') === 0) {
-            var group = m3uAttr(s, /group-title="([^"]*)"/i);
+            var group = m3uAttr(s, /group-title="([^"]*)"/i).trim();   // (as chosen groups are kept: trimmed)
             var kind = m3uAttr(s, /tvg-type="([^"]*)"/i);
             cur = {
                 name: (s.slice(s.lastIndexOf(',') + 1).trim()) || 'Channel',
@@ -5978,7 +6003,7 @@ function m3uControl(req, res, path, query) {
         send(res, 400, 'application/json', JSON.stringify({ error: 'bad playlist link' }));
         return;
     }
-    var groups = q.groups ? String(q.groups).split(',').map(function (g) { try { return decodeURIComponent(g).trim(); } catch (e) { return g.trim(); } }).filter(Boolean) : [];   // (each name %-encoded: see YTPlay.m3uLoad)
+    var groups = q.groups ? String(q.groups).split('\n').map(function (g) { return g.trim(); }).filter(Boolean) : [];   // (one a line: see YTPlay.m3uLoad)
     var groupSet = null;
     if (groups.length) {
         groupSet = Object.create(null);

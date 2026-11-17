@@ -8,7 +8,7 @@ var Player = (function (P) {
     return {
         init: P.init, play: P.play, handleKey: P.handleKey, isActive: P.isActive,
         isLivePlaying: P.isLivePlaying, isBrowseOverlay: P.isBrowseOverlay, setBrowseOverlay: P.setBrowseOverlay,
-        currentLiveId: P.currentLiveId, liveMeta: P.liveMeta, onLiveMetaChange: P.onLiveMetaChange, togglePlay: P.togglePlay, toggleStreamInfo: P.toggleStreamInfo, zap: P.zapLive,
+        currentLiveId: P.currentLiveId, liveMeta: P.liveMeta, onLiveMetaChange: P.onLiveMetaChange, togglePlay: P.togglePlay, toggleStreamInfo: P.toggleStreamInfo, zap: P.zapLive, numberKey: P.numberKey,
         exit: P.exit, continueList: P.continueList, getResume: P.getResume, removeProgress: P.removeProgress,
         getSubCfg: P.getSubCfg, setSubCfg: P.setSubCfg, getAudioCfg: P.getAudioCfg, setAudioCfg: P.setAudioCfg,
         isWatched: P.isWatched, watchedState: P.watchedState, watchedAt: P.watchedAt, watchedSince: P.watchedSince, progressFor: P.progressFor,
