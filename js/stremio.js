@@ -599,7 +599,7 @@ var Stremio = (function () {
     var EXPORT_LINE = '#!stremiok ';
     var EXPORT_STORE = ['stremiok.prefs', 'stremiok.feeds', 'stremiok.searchfeeds', 'stremiok.sourcefeeds', 'stremiok.ranking', 'stremiok.server', 'stremiok.formats',
         'stremiok.resblock', 'stremiok.subcfg', 'stremiok.audiocfg', 'stremiok.playercfg', 'stremiok.private', 'stremiok.youtube', 'stremiok.appshortcuts',
-        'stremiok.appsallowed', 'stremiok.aiomanager', 'stremiok.iptv.stalkerall', 'stremiok.iptv.stalkerkeep', 'stremiok.iptv.every', 'stremiok.iptv.size', 'stremiok.local.matching', 'stremiok.local.hidden',
+        'stremiok.appsallowed', 'stremiok.aiomanager', 'stremiok.iptv.stalkerall', 'stremiok.iptv.stalkerkeep', 'stremiok.iptv.every', 'stremiok.iptv.size', 'stremiok.iptv.extraguides', 'stremiok.local.matching', 'stremiok.local.hidden',
         'stremiok.addonsoff', 'stremiok.integrations'];
     var HISTORY_STORE = ['stremiok.progress', 'stremiok.watched', 'stremiok.cworder', 'stremiok.subhist', 'stremiok.audiohist', 'stremiok.playedsrc', 'stremiok.seriessrc',
         'stremiok.unsuitable', 'stremiok.aspects', 'stremiok.iptv.favs', 'stremiok.local.matches', 'stremiok.local.fixes'];

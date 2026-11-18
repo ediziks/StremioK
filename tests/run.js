@@ -2324,6 +2324,116 @@ async function run() {
         ctx.Player.exit();
     });
 
+    await runTest('TV guide keys: country prefixes, the same on both sides, unclear names and no cross-country match', async () => {
+        const svc = loadService();
+        const ctx = loadBrowserScript('js/epg.js');
+        const EPG = ctx.EPG;
+        // Provider prefixes and suffixes: the country kept apart
+        assert.strictEqual(EPG.key('n', 'TR: TRT 1 HD'), 'n:trt1.tr');
+        assert.strictEqual(EPG.key('n', 'DE| Das Erste FHD'), 'n:daserste.de');
+        assert.strictEqual(EPG.key('n', '|UK| BBC One'), 'n:bbcone.uk');
+        assert.strictEqual(EPG.key('n', '[NL] NPO 1'), 'n:npo1.nl');
+        assert.strictEqual(EPG.key('n', 'AL-Jazeera'), 'n:aljazeera', 'a hyphen without spaces is not a prefix');
+        assert.strictEqual(EPG.key('n', 'Plug In'), 'n:plugin', '"in" at the end is a word, not India');
+        assert.strictEqual(EPG.key('i', 'trt1.hd'), 'i:trt1hd', '".hd" is not a country');
+        // The TV and the service make the same keys
+        ['TR: TRT 1 HD', 'FOX SPORTS 2 ARG', 'El Trece HD', 'Das.Erste.de', '|UK| BBC One', 'Show TV'].forEach((n) => {
+            assert.strictEqual(EPG.key('n', n), svc.epgKey('n', n), 'name key ' + n);
+            assert.strictEqual(EPG.key('i', n), svc.epgKey('i', n), 'id key ' + n);
+            assert.strictEqual(JSON.stringify(EPG.guideKeys(n, [n])), JSON.stringify(svc.epgGuideKeys(n, [n])), 'guide keys ' + n);
+        });
+        // A channel asks in its country (from its name, tvg-id or the cleaner's), else without one
+        assert.deepStrictEqual(Array.from(EPG.keysOf({ name: 'FOX', variants: [{ rawName: 'TR: FOX HD' }] })), ['n:fox.tr', 'n:fox.~']);
+        assert.deepStrictEqual(Array.from(EPG.keysOf({ name: 'FOX', rawName: 'FOX' })), ['n:fox']);
+        assert.strictEqual(EPG.countryOf({ name: 'Kanal D', _country: 'TR', rawName: 'Kanal D' }), 'tr');
+        assert.strictEqual(EPG.countryOf({ name: 'MBC', _country: 'AR', rawName: 'MBC' }), '', 'the cleaner\'s AR is Arabic, not Argentina');
+
+        // The service's parser: a name two countries share answers neither; a country's key its own
+        const chans = [{ name: 'FOX', variants: [{ rawName: 'TR: FOX HD' }] }, { name: 'FOX', rawName: 'FOX' }, { name: 'TRT 1', variants: [{ rawName: 'TR: TRT 1' }] }, { name: 'ZDF', rawName: 'ZDF' }];
+        const keys = [].concat.apply([], chans.map((c) => Array.from(EPG.keysOf(c))));
+        const p = svc.epgParser(svc.epgBits(EPG.bitsFor(keys)), 1800000000);
+        p.feed('<tv><channel id="FOX.us"><display-name>FOX</display-name></channel><channel id="Fox.tr"><display-name>FOX</display-name></channel>' +
+            '<channel id="trt1"><display-name>TRT 1</display-name></channel><channel id="ZDF.de"><display-name>ZDF</display-name></channel></tv>');
+        p.finish();
+        assert.strictEqual(p.keys['n:fox.tr'], 'Fox.tr', 'the Turkish FOX gets the Turkish guide');
+        assert.strictEqual(p.keys['n:fox'], 0, 'a FOX without a country is unclear, not the first one listed');
+        assert.strictEqual(p.keys['n:trt1.~'], 'trt1', 'a guide without countries still answers a Turkish channel');
+        assert.strictEqual(p.keys['n:zdf'], 'ZDF.de', 'a name only one guide channel has answers a channel without a country');
+        assert.strictEqual(p.keys['n:fox.us'], 'FOX.us');
+        assert.ok(!('n:fox.de' in p.keys), 'a German FOX must not get the American or Turkish guide');
+
+        // A provider's region groups are not countries; its own codes are
+        assert.strictEqual(EPG.countryOf({ name: 'GEM TV', _country: 'AS', rawName: 'IR| GEM TV HD' }), 'ir', 'IR| is Iran, the AS group Asia');
+        assert.strictEqual(EPG.countryOf({ name: 'Canal 56', _country: 'AM', rawName: 'Canal 56' }), '', 'AM is the Americas, not Armenia');
+        assert.strictEqual(EPG.countryOf({ name: 'Peace TV', _country: 'AS', rawName: 'PK| PEACE TV URDU' }), 'pk');
+        assert.strictEqual(EPG.key('n', 'SW| EXPRESSEN TV HD'), 'n:expressen.se', 'SW| is Sweden');
+        assert.strictEqual(EPG.key('n', 'Canal DO'), 'n:canaldo', '"do" at the end is not the Dominican Republic');
+        ['IR| GEM TV HD', 'PK| PTV BOLAN SD', 'SW| PIRATE ROCK', 'DO| Valle Nuevo TV'].forEach((n) => {
+            assert.strictEqual(EPG.key('n', n), svc.epgKey('n', n), 'name key ' + n);
+        });
+
+        // A big playlist's bitset lets few other channels through (two bits a key)
+        const many = [];
+        for (let i = 0; i < 100000; i++) { many.push('n:chan' + i + '.~'); }
+        const bits = svc.epgBits(EPG.bitsFor(many));
+        assert.ok(many.slice(0, 2000).every((k) => svc.epgHas(bits, k)), 'every asked key is in the set');
+        const kMax = EPG.bitsFor(many.concat(many, many));
+        assert.ok(kMax.length <= svc.EPG_K_MAX && /^[A-Za-z0-9_-]+$/.test(kMax), 'the largest bitset (' + kMax.length + ' characters) passes /epg/load\'s check');
+        assert.ok(kMax.length + 2100 <= svc.EPG_BODY_MAX, 'and fits a POST body with the guide link');
+        let through = 0;
+        for (let i = 0; i < 10000; i++) { if (svc.epgHas(bits, 'n:other' + i + '.~')) { through++; } }
+        assert.ok(through < 600, 'under 6% of keys not asked for get through, got ' + through);
+
+        // A guide with more programs than EPG_TOTAL: shared by all its channels, not the first ones'
+        const n = 5207, ck = [];   // (your guide's size)
+        for (let i = 0; i < n; i++) { ck.push('i:ch' + i, 'i:ch' + i + '.~'); }
+        const big = svc.epgParser(svc.epgBits(EPG.bitsFor(ck)), 1800000000);
+        let xml = '<tv>';
+        for (let i = 0; i < n; i++) { xml += '<channel id="ch' + i + '"><display-name>x</display-name></channel>'; }
+        big.feed(xml);
+        const ts = (t) => new Date(t * 1000).toISOString().replace(/[-:T]/g, '').slice(0, 14) + ' +0000';
+        for (let i = 0; i < n; i++) {
+            let chunk = '';
+            for (let j = 0; j < 60; j++) { const s = 1800000000 - 5400 + j * 900; chunk += '<programme start="' + ts(s) + '" stop="' + ts(s + 900) + '" channel="ch' + i + '"><title>P' + j + '</title></programme>'; }
+            big.feed(chunk);
+        }
+        big.feed('</tv>');
+        big.finish();
+        assert.ok(big.count <= svc.EPG_TOTAL, 'within EPG_TOTAL: ' + big.count);
+        assert.ok(big.progs['ch' + (n - 1)] && big.progs['ch' + (n - 1)].length >= 4, 'the last channel still has its programs');
+        assert.strictEqual(big.progs.ch0[0][2], 'P5', 'a cut channel keeps what\'s on now and one before it, not the past 2 h');
+        assert.ok(big.progs.ch0.some((r) => r[0] <= 1800000000 && r[1] > 1800000000), 'what\'s on now is kept');
+        assert.ok(!big.partial, 'shared out, nothing dropped wholesale');
+
+        // Extra guides: read after the playlist's own, only for channels it gives no programs
+        const two = [{ name: 'TRT 1', variants: [{ rawName: 'TR| TRT 1 FHD', tvgId: 'trt1.tr' }] }, { name: 'KANAL D', variants: [{ rawName: 'TR| KANAL D FHD', tvgId: 'kanald.tr' }] }];
+        const tk = [].concat.apply([], two.map((c) => Array.from(EPG.keysOf(c))));
+        const xp = svc.epgParser(svc.epgBits(EPG.bitsFor(tk)), 1800000000);
+        const prog = (ch, t) => '<programme start="' + ts(1800000000 - 600) + '" stop="' + ts(1800000000 + 1200) + '" channel="' + ch + '"><title>' + t + '</title></programme>';
+        xp.feed('<tv><channel id="trt1.tr"><display-name>TR| TRT 1 FHD</display-name></channel><channel id="kanald.tr"><display-name>TR| KANAL D FHD</display-name></channel>' + prog('kanald.tr', 'Own') + '</tv>');
+        xp.src = 1; xp.buf = '';
+        xp.feed('<tv><channel id="TRT.1.HD.tr"><display-name>TRT 1 HD</display-name></channel><channel id="KANAL.D.HD.tr"><display-name>KANAL D HD</display-name></channel>' +
+            prog('TRT.1.HD.tr', 'Extra') + prog('KANAL.D.HD.tr', 'Extra D') + '</tv>');
+        xp.finish();
+        assert.strictEqual(xp.keys['n:trt1.tr'], 'x1:TRT.1.HD.tr', 'TRT 1 (no programs in its own guide) gets the extra guide');
+        assert.strictEqual(xp.keys['i:trt1.tr'], 'x1:TRT.1.HD.tr');
+        assert.strictEqual(xp.progs['x1:TRT.1.HD.tr'][0][2], 'Extra');
+        assert.strictEqual(xp.keys['i:kanald.tr'], 'kanald.tr', 'Kanal D keeps its own guide, which has programs');
+        assert.ok(!xp.channels['x1:KANAL.D.HD.tr'], 'an extra guide\'s channel that adds nothing is not kept');
+        // The link: extras after "#extra=", none sent to the provider; picked by the channels' countries
+        assert.strictEqual(svc.epgSources('http://p.example/xmltv.php?u=1#extra=' + encodeURIComponent('https://a.example/TR1.xml.gz|https://a.example/UK1.xml.gz')).join(' '),
+            'http://p.example/xmltv.php?u=1 https://a.example/TR1.xml.gz https://a.example/UK1.xml.gz');
+        assert.strictEqual(EPG.withExtras('http://p.example/x', []), 'http://p.example/x');
+        assert.strictEqual(EPG.withExtras('', ['https://a/1', 'https://a/2']), 'https://a/1#extra=' + encodeURIComponent('https://a/2'));
+        const trs = []; for (let i = 0; i < 12; i++) { trs.push({ name: 'K' + i, rawName: 'TR| K' + i }); }
+        assert.deepStrictEqual(Array.from(EPG.extrasFor(trs)), ['https://epgshare01.online/epgshare01/epg_ripper_TR1.xml.gz', 'https://epgshare01.online/epgshare01/epg_ripper_TR3.xml.gz']);
+        assert.strictEqual(EPG.extrasFor(trs.slice(0, 5)).length, 0, 'under 10 channels of a country: none');
+        const share = Math.floor(svc.EPG_TOTAL * 0.8 / n);
+        assert.strictEqual(big.per, share, 'each channel keeps its fair share (EPG_TOTAL × 0.8 / 5,207), not less');
+        assert.strictEqual(big.progs.ch0.length, share);
+        assert.strictEqual(big.progs['ch' + (n - 1)].length, share, 'the last channel too');
+    });
+
     console.log('\n===========================');
     console.log(`Summary: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 

@@ -6631,32 +6631,52 @@ function drmControl(req, res, query, body, leaving) {
 // its id or one of its names is in it (a few others may slip through: harmless). Downloaded
 // (gzipped or not) up to EPG_MAX, read a piece at a time up to EPG_XML_MAX unpacked, within
 // EPG_MS (past a limit: what was read, "partial"); programs from EPG_BEFORE ago to EPG_AFTER
-// ahead, EPG_PER a channel, EPG_TOTAL in all. One guide read at a time, EPG_GUIDES kept. On the
+// ahead, EPG_PER a channel, EPG_TOTAL in all (shared: past it, each channel's cut to its share,
+// down to EPG_PER_MIN, and only then later ones dropped). One guide read at a time, EPG_GUIDES kept. On the
 // sideloaded app saved in its folder (epg-<hash>.json), read again after EPG_FRESH_MS; under
 // TizenBrew (no folder) kept in memory. While a guide is read again, the last one still answers.
-var EPG_MAX = 60 * 1048576, EPG_XML_MAX = 200 * 1048576, EPG_MS = 5 * 60000, EPG_BEFORE = 2 * 3600, EPG_AFTER = 30 * 3600;
-var EPG_GET_BYTES = 2 * 1048576, EPG_BODY_MAX = 65536;   // (an /epg/get answer; a POST's body: the channels' keys)
-var EPG_PER = 150, EPG_TOTAL = 60000, EPG_TITLE = 120, EPG_DESC = 200, EPG_GUIDES = 4, EPG_FRESH_MS = 6 * 3600000, EPG_RETRY_MS = 10 * 60000;
+var EPG_MAX = 200 * 1048576, EPG_XML_MAX = 400 * 1048576, EPG_MS = 5 * 60000, EPG_BEFORE = 2 * 3600, EPG_AFTER = 30 * 3600;
+var EPG_GET_BYTES = 2 * 1048576, EPG_BODY_MAX = 262144, EPG_FORMAT = 3, EPG_ASK_KEYS = 2000, EPG_K_MAX = 180000;   // (an /epg/get answer; a POST's body: the channels' keys; their bitset, base64: js/epg.js's bitsFor, 1,048,576 bits at most)
+var EPG_PER = 150, EPG_PER_MIN = 4, EPG_TOTAL = 120000, EPG_TITLE = 120, EPG_DESC = 200, EPG_GUIDES = 4, EPG_FRESH_MS = 6 * 3600000, EPG_RETRY_MS = 10 * 60000;
 var _epg = Object.create(null), _epgQueue = [], _epgBusy = false;
 var EPG_ACCENTS = { 'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a', 'å': 'a', 'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e', 'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
     'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o', 'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u', 'ñ': 'n', 'ç': 'c' };
 // A channel's key (the same as js/epg.js's EPG.key, see there): a tvg-id ("i:", iptv-org's feed
 // after an @ left out) or a name ("n:", no capitals, accents, spaces, "TV" or HD tags), a country
-// at the end kept apart after a dot. A guide's channel answers with it and without (epgKeys).
-var EPG_COUNTRY = { ar: 'ar', arg: 'ar', mx: 'mx', mex: 'mx', us: 'us', usa: 'us', uk: 'uk', gb: 'uk', es: 'es', br: 'br', cl: 'cl', co: 'co', pe: 'pe',
-    uy: 'uy', py: 'py', ve: 've', ec: 'ec', bo: 'bo', ca: 'ca', fr: 'fr', de: 'de', it: 'it', pt: 'pt' };
+// (".tr", " MX" at the end, "TR:" / "|UK|" at the start) kept apart after a dot. A guide's
+// channel answers with it in its country and without one (epgGuideKeys).
+var EPG_COUNTRY = { ar: 'ar', arg: 'ar', mx: 'mx', mex: 'mx', us: 'us', usa: 'us', uk: 'uk', gb: 'uk', gbr: 'uk', eng: 'uk', es: 'es', esp: 'es', br: 'br', cl: 'cl', co: 'co', pe: 'pe',
+    uy: 'uy', py: 'py', ve: 've', ec: 'ec', bo: 'bo', ca: 'ca', fr: 'fr', fra: 'fr', de: 'de', ger: 'de', deu: 'de', it: 'it', ita: 'it', pt: 'pt', por: 'pt',
+    tr: 'tr', tur: 'tr', nl: 'nl', ned: 'nl', nld: 'nl', be: 'be', bel: 'be', pl: 'pl', pol: 'pl', at: 'at', aut: 'at', ch: 'ch', se: 'se', swe: 'se',
+    no: 'no', dk: 'dk', fi: 'fi', gr: 'gr', gre: 'gr', ro: 'ro', hu: 'hu', cz: 'cz', sk: 'sk', ru: 'ru', rus: 'ru', ua: 'ua', 'in': 'in', au: 'au', aus: 'au',
+    ie: 'ie', irl: 'ie', al: 'al', rs: 'rs', hr: 'hr', ba: 'ba', bg: 'bg', si: 'si', il: 'il', ae: 'ae', sa: 'sa', eg: 'eg', ma: 'ma', za: 'za', nz: 'nz', ir: 'ir', irn: 'ir', pk: 'pk', pak: 'pk', bd: 'bd', cn: 'cn', chn: 'cn', 'do': 'do', afg: 'af', sw: 'se', jp: 'jp', kr: 'kr', ph: 'ph', th: 'th', vn: 'vn', my: 'my',
+    id: 'id', lk: 'lk', np: 'np', qa: 'qa', kw: 'kw', iq: 'iq', jo: 'jo', lb: 'lb', sy: 'sy', ps: 'ps', om: 'om', bh: 'bh', ye: 'ye', tn: 'tn', dz: 'dz', ly: 'ly',
+    ng: 'ng', gh: 'gh', ke: 'ke', mk: 'mk', me: 'me', xk: 'xk', lt: 'lt', lv: 'lv', ee: 'ee', is: 'is', lu: 'lu', cy: 'cy', mt: 'mt', cr: 'cr', gt: 'gt', hn: 'hn',
+    sv: 'sv', ni: 'ni', pa: 'pa', pr: 'pr', jm: 'jm', tt: 'tt', cu: 'cu' };
+var EPG_SUFFIX_SKIP = { 'in': 1, at: 1, no: 1, be: 1, ba: 1, ma: 1, sa: 1, si: 1, por: 1, aus: 1, 'do': 1, is: 1, me: 1, my: 1, id: 1, pa: 1, pr: 1, sv: 1, ni: 1, om: 1, cu: 1, ke: 1, ye: 1, ps: 1, tt: 1, gt: 1, cr: 1, lb: 1, jo: 1, np: 1, sw: 1 }, EPG_NOT_CC = { hd: 1, sd: 1, tv: 1, fm: 1, hq: 1 };
+var EPG_PREFIX = /^[\s|\[(\u2502\u2503]*([a-z]{2,3})(?:\s*[:|\])\u2502\u2503]+|\s+-+)\s*/;
 function epgParts(kind, s) {
     var t = String(s || '').toLowerCase().replace(/[áàâäãåéèêëíìîïóòôöõúùûüñç]/g, function (c) { return EPG_ACCENTS[c]; }).trim(), cc = '', m;
     if (kind === 'i') { t = t.replace(/@.*$/, ''); }
-    if ((m = /\.([a-z]{2})$/.exec(t))) { cc = m[1]; t = t.slice(0, -3); }
-    else if (kind === 'n' && (m = /[\s_-]+([a-z]{2,3})$/.exec(t)) && EPG_COUNTRY[m[1]] && t.length > m[0].length) { cc = EPG_COUNTRY[m[1]]; t = t.slice(0, -m[0].length); }
+    if (kind === 'n' && (m = EPG_PREFIX.exec(t)) && EPG_COUNTRY[m[1]] && t.length > m[0].length) { cc = EPG_COUNTRY[m[1]]; t = t.slice(m[0].length); }
+    if ((m = /\.([a-z]{2})$/.exec(t)) && !EPG_NOT_CC[m[1]]) { cc = cc || EPG_COUNTRY[m[1]] || m[1]; t = t.slice(0, -3); }
+    else if (kind === 'n' && (m = /[\s_-]+([a-z]{2,3})$/.exec(t)) && EPG_COUNTRY[m[1]] && !EPG_SUFFIX_SKIP[m[1]] && t.length > m[0].length) { cc = cc || EPG_COUNTRY[m[1]]; t = t.slice(0, -m[0].length); }
     if (kind === 'n') { t = t.replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\b(hd|fhd|uhd|sd|hq|4k|8k|hevc|h265|1080p?|720p?|tv)\b/g, ' '); }
     t = t.replace(/[^a-z0-9]+/g, '');
     if (kind === 'n' && t.length > 4) { t = t.replace(/tv$/, ''); }
     return { base: t.slice(0, 60), cc: cc };
 }
 function epgKey(kind, s) { var p = epgParts(kind, s); return p.base ? kind + ':' + p.base + (p.cc ? '.' + p.cc : '') : ''; }
-function epgKeys(kind, s) { var p = epgParts(kind, s); return !p.base ? [] : p.cc ? [kind + ':' + p.base + '.' + p.cc, kind + ':' + p.base] : [kind + ':' + p.base]; }
+// A guide's channel's keys (the same as js/epg.js's EPG.guideKeys): its id and display names,
+// each without a country and in the channel's (its id's, else a name's; ".~" when neither says).
+function epgGuideKeys(id, names) {
+    var ip = epgParts('i', id), np = (names || []).map(function (n) { return epgParts('n', n); }), cc = ip.cc, out = [];
+    np.forEach(function (p) { if (!cc && p.cc) { cc = p.cc; } });
+    function add(kind, p) { if (p.base) { out.push(kind + ':' + p.base, kind + ':' + p.base + '.' + (cc || '~')); } }
+    add('i', ip);
+    np.forEach(function (p) { add('n', p); });
+    return { keys: out, cc: cc };
+}
 function epgHash(s) {
     var h = 0x811c9dc5;
     for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
@@ -6664,8 +6684,8 @@ function epgHash(s) {
 }
 function epgHas(bits, key) {
     if (!bits || !bits.length || !key) { return false; }
-    var i = epgHash(key) % (bits.length * 8);
-    return !!(bits[i >> 3] & (1 << (i & 7)));
+    var n = bits.length * 8, i = epgHash(key) % n, j = epgHash('~' + key) % n;   // (two bits a key: js/epg.js's bitsFor)
+    return !!(bits[i >> 3] & (1 << (i & 7))) && !!(bits[j >> 3] & (1 << (j & 7)));
 }
 function epgBits(k) {   // base64url -> bytes
     var b64 = String(k || '').replace(/-/g, '+').replace(/_/g, '/');
@@ -6728,25 +6748,39 @@ function epgAbout(cats) {
 // The reader: text in, a piece at a time (feed); <channel> and <programme> elements read as
 // they complete.
 function epgParser(want, now) {
-    var p = { buf: '', channels: Object.create(null), keys: Object.create(null), progs: Object.create(null), icons: Object.create(null), count: 0, partial: false, isGuide: false };   // (no prototype: a channel id like "__proto__" or "constructor" is just a name)
-    var from = now - EPG_BEFORE, to = now + EPG_AFTER;
+    var p = { buf: '', channels: Object.create(null), keys: Object.create(null), progs: Object.create(null), icons: Object.create(null), count: 0, partial: false, isGuide: false, per: EPG_PER };   // (no prototype: a channel id like "__proto__" or "constructor" is just a name)
+    var from = now - EPG_BEFORE, to = now + EPG_AFTER, kcc = Object.create(null), ksrc = Object.create(null), idKeys = Object.create(null);   // (each key's channel's country and source, each channel's keys, while it's read)
+    p.src = 0;   // (the source being read: 0 the playlist's guide, then the extra ones, see epgSources)
+    function srcId(id) { return p.src ? 'x' + p.src + ':' + id : id; }   // (an extra guide's channel ids kept apart from the others')
+    // (a key an earlier source gave a channel with no programs: an extra guide's channel takes it)
+    function emptyKey(k) { var old = p.keys[k]; return !!old && ksrc[k] < p.src && !(p.progs[old] && p.progs[old].length); }
     function channel(el) {
-        var id = epgAttr(el.slice(0, el.indexOf('>') + 1), 'id');
-        if (!id) { return; }
-        var keys = epgKeys('i', id);
-        epgInner(el, 'display-name', true).forEach(function (n) { keys = keys.concat(epgKeys('n', n)); });
-        if (!keys.some(function (k) { return epgHas(want, k); })) { return; }
+        var raw = epgAttr(el.slice(0, el.indexOf('>') + 1), 'id');
+        if (!raw) { return; }
+        var gk = epgGuideKeys(raw, epgInner(el, 'display-name', true)), id = srcId(raw);
+        if (!gk.keys.some(function (k) { return epgHas(want, k) && (!p.src || !(k in p.keys) || emptyKey(k)); })) { return; }   // (an extra guide's channel only where it adds one)
         p.channels[id] = 1;
-        keys.forEach(function (k) { if (!p.keys[k]) { p.keys[k] = id; } });
+        // (a key without a country that channels of two countries share answers neither: 0,
+        // unclear, rather than the first one listed; in one country, the first one keeps it)
+        var olds = [];
+        function take(k) { p.keys[k] = id; kcc[k] = gk.cc; ksrc[k] = p.src; (idKeys[id] = idKeys[id] || []).push(k); }
+        gk.keys.forEach(function (k) {
+            if (!(k in p.keys)) { take(k); }
+            else if (emptyKey(k)) { if (olds.indexOf(p.keys[k]) === -1) { olds.push(p.keys[k]); } take(k); }
+            else if (p.keys[k] && p.keys[k] !== id && ksrc[k] === p.src && k.indexOf('.') === -1 && kcc[k] !== gk.cc) { p.keys[k] = 0; }
+        });
+        // (an empty channel an extra guide's replaces: all its keys to this one, its tvg-id's too,
+        // so a channel asking with that first gets these programs, not the empty list)
+        olds.forEach(function (old) { (idKeys[old] || []).forEach(function (k) { if (p.keys[k] === old) { take(k); } }); });
         var icon = /<icon\s[^>]*\bsrc\s*=\s*["']([^"']{1,1000})["']/i.exec(el);   // (its logo: for a channel the playlist gives none)
         if (icon && /^https?:\/\/[^\s]+$/i.test(epgText(icon[1]))) { p.icons[id] = epgText(icon[1]); }
     }
     function programme(el) {
         var tag = el.slice(0, el.indexOf('>') + 1), ch = epgAttr(tag, 'channel');
-        if (!ch || !p.channels[ch]) { return; }
+        if (!ch || !p.channels[ch = srcId(ch)]) { return; }
         var start = epgTime(epgAttr(tag, 'start')), stop = epgTime(epgAttr(tag, 'stop')) || start + 1800;
         if (!start || stop <= from || start >= to || stop <= start) { return; }
-        if (p.count >= EPG_TOTAL) { p.partial = true; return; }
+        if (p.count >= EPG_TOTAL) { p.partial = true; return; }   // (each channel down to EPG_PER_MIN and still too many)
         var row = [start, stop, epgInner(el, 'title').slice(0, EPG_TITLE) || '?', epgInner(el, 'desc').slice(0, EPG_DESC)];
         var pic = /<icon\s[^>]*\bsrc\s*=\s*["']([^"']{1,1000})["']/i.exec(el);   // (its picture)
         if (pic && /^https?:\/\/[^\s]+$/i.test(epgText(pic[1]))) { row.push(epgText(pic[1])); }
@@ -6755,11 +6789,21 @@ function epgParser(want, now) {
         var l = p.progs[ch] = p.progs[ch] || [];
         l.push(row);
         p.count++;
-        if (l.length > 2 * EPG_PER) {   // (held to EPG_PER as it's read, the earliest: a feed may list one channel's programs out of order)
-            l.sort(function (a, b) { return a[0] - b[0]; });
-            p.count -= l.length - EPG_PER;
-            l.length = EPG_PER;
+        if (l.length > (p.per < EPG_PER ? p.per : 2 * p.per)) { cut(l); }   // (held to p.per as it's read: a feed may list one channel's programs out of order; once shared, exactly, or the total grows past EPG_TOTAL again and each share shrinks)
+        if (p.count >= EPG_TOTAL && p.per > EPG_PER_MIN) {   // (a big guide: EPG_TOTAL shared by its channels, not the first ones' alone)
+            p.per = Math.max(EPG_PER_MIN, Math.min(p.per - 1, Math.floor(EPG_TOTAL * 0.8 / Math.max(1, Object.keys(p.channels).length))));
+            Object.keys(p.progs).forEach(function (c) { if (p.progs[c].length > p.per) { cut(p.progs[c]); } });
         }
+    }
+    function cut(l) {   // (a channel's programs to p.per: what's on now first, then what's next; of the past only the one before)
+        l.sort(function (a, b) { return a[0] - b[0]; });
+        var i = 0;
+        while (i < l.length && l[i][1] <= now) { i++; }
+        i = Math.max(0, Math.min(i - 1, l.length - p.per));
+        var keep = l.slice(i, i + p.per);
+        p.count -= l.length - keep.length;
+        l.length = 0;
+        l.push.apply(l, keep);
     }
     p.feed = function (text) {
         if (!text) { return; }
@@ -6784,7 +6828,7 @@ function epgParser(want, now) {
         var total = 0;
         Object.keys(p.progs).forEach(function (ch) {
             var l = p.progs[ch].sort(function (a, b) { return a[0] - b[0]; });
-            if (l.length > EPG_PER) { l = p.progs[ch] = l.slice(0, EPG_PER); }
+            if (l.length > p.per) { cut(l); }
             total += l.length;
         });
         p.count = total;
@@ -6792,12 +6836,12 @@ function epgParser(want, now) {
     return p;
 }
 // The guide's download, unpacked if it's gzipped, its text handed to onText as it comes; past
-// EPG_MAX / EPG_XML_MAX it stops there (cb(null, true): what was read is kept).
+// EPG_MAX / EPG_XML_MAX it stops there (cb(null, why): what was read is kept; and the bytes it took).
 function epgFetch(url, onText, cb) {
     cb = once(cb);
     var hops = 0, r = null, done = false, got = 0, unpacked = 0, stopGz = null;
-    var timer = setTimeout(function () { end(null, true); }, EPG_MS);
-    function end(err, partial) { if (done) { return; } done = true; clearTimeout(timer); try { if (r) { r.abort(); } } catch (e) {} if (stopGz) { stopGz(); } cb(err, !!partial); }
+    var t0 = Date.now(), timer = setTimeout(function () { end(null, 'took over ' + Math.round(EPG_MS / 60000) + ' min'); }, EPG_MS);
+    function end(err, partial) { if (done) { return; } done = true; clearTimeout(timer); try { if (r) { r.abort(); } } catch (e) {} if (stopGz) { stopGz(); } cb(err, partial || '', { got: got, unpacked: unpacked, ms: Date.now() - t0 }); }
     function get(u) {
         var pu;
         try { pu = urllib.parse(u); } catch (e) { end(upError('a bad link', 400)); return; }
@@ -6815,7 +6859,7 @@ function epgFetch(url, onText, cb) {
                     if (done) { return; }
                     unpacked += buf.length;
                     try { onText(dec.write(buf)); } catch (e) { end(e); return; }
-                    if (unpacked > EPG_XML_MAX) { end(null, true); }
+                    if (unpacked > EPG_XML_MAX) { end(null, 'over ' + (EPG_XML_MAX / 1048576) + ' MB unpacked'); }
                 }
                 var told = /gzip/i.test(String(resp.headers['content-encoding'] || '')), decided = false;
                 function decide(b) {   // gzip (its header said so, or 1f 8b) or text
@@ -6842,7 +6886,7 @@ function epgFetch(url, onText, cb) {
                         chunk = head; head = null;
                     }
                     feed(chunk);
-                    if (got > EPG_MAX) { end(null, true); }
+                    if (got > EPG_MAX) { end(null, 'a download over ' + (EPG_MAX / 1048576) + ' MB'); }
                 });
                 resp.on('end', function () {
                     if (done) { return; }
@@ -6880,11 +6924,24 @@ function epgSaved(url) {
         var st = fs.statSync(f);
         if (st.size > EPG_FILE_MAX) { fs.unlink(f, function () {}); return null; }
         var g = JSON.parse(String(fs.readFileSync(f, 'utf8')));
-        if (!g || g.url !== url || typeof g.k !== 'string' || !g.keys || !g.progs) { return null; }
+        if (!g || g.v !== EPG_FORMAT || g.url !== url || typeof g.k !== 'string' || !g.keys || !g.progs) { return null; }   // (saved by an older StremioK: its keys are made another way)
         g.state = 'ready';
         return g;
     } catch (e) { return null; }
 }
+// A guide's sources: its link, and after "#extra=" the extra guides js/epg.js adds (EPG.extras:
+// free guides per country, read after the playlist's own, for the channels it gives no programs).
+var EPG_EXTRAS = 6;
+function epgSources(url) {
+    var i = String(url).indexOf('#extra='), out = [i === -1 ? String(url) : String(url).slice(0, i)];
+    if (i !== -1) {
+        var x = '';
+        try { x = decodeURIComponent(String(url).slice(i + 7)); } catch (e) {}
+        x.split('|').forEach(function (u) { if (/^https?:\/\/[^\s|]+$/i.test(u) && out.length <= EPG_EXTRAS && out.indexOf(u) === -1) { out.push(u); } });
+    }
+    return out;
+}
+function epgHost(u) { try { return urllib.parse(u).hostname || '?'; } catch (e) { return '?'; } }   // (never the link: an Xtream guide's has the login)
 function epgView(g) { return { state: g.state, at: g.at || 0, channels: g.channels || 0, programmes: g.programmes || 0, partial: !!g.partial, error: g.error || '' }; }
 function epgStart(url, k, force) {
     epgSweep();
@@ -6917,8 +6974,22 @@ function epgPump() {
     var g = _epgQueue.shift();
     if (_epg[g.url] !== g) { epgPump(); return; }   // (replaced meanwhile)
     _epgBusy = true;
-    var p = epgParser(epgBits(g.k), Math.floor(Date.now() / 1000));
-    epgFetch(g.url, p.feed, function (err, partial) {
+    var p = epgParser(epgBits(g.k), Math.floor(Date.now() / 1000)), srcs = epgSources(g.url), firstErr = null, cutWhy = '', notes = [];
+    (function next(i) {
+        if (i < srcs.length) {
+            p.src = i; p.buf = '';
+            var before = Object.keys(p.channels).length;
+            epgFetch(srcs[i], p.feed, function (e, why, size) {
+                if (e) { if (!i) { firstErr = e; } else { log('Extra TV guide not read (' + epgHost(srcs[i]) + '): ' + (e.message || 'failed')); } }
+                if (why && !cutWhy) { cutWhy = (i ? epgHost(srcs[i]) + ': ' : '') + why; }
+                notes.push((i ? epgHost(srcs[i]) + ' ' : '') + Math.round(size.got / 1048576) + ' MB (' + Math.round(size.unpacked / 1048576) + ' MB unpacked) in ' + Math.round(size.ms / 1000) + ' s' + (i ? ', ' + (Object.keys(p.channels).length - before) + ' channels added' : ''));
+                next(i + 1);
+            });
+            return;
+        }
+        done(srcs.length > 1 && Object.keys(p.channels).length ? null : firstErr, cutWhy);
+    })(0);
+    function done(err, partial) {
         _epgBusy = false;
         try {
             p.finish();
@@ -6931,10 +7002,11 @@ function epgPump() {
                 log('TV guide not read: ' + g.error);
             } else if (_epg[g.url] === g) {   // (still wanted: not cleared, nor dropped, meanwhile)
                 g.keys = p.keys; g.progs = p.progs; g.icons = p.icons; g.channels = kept; g.programmes = p.count;
-                g.partial = partial || p.partial; g.error = ''; g.state = 'ready'; g.at = Date.now();
+                g.partial = !!(partial || p.partial); g.error = '';
+                log('TV guide read: ' + kept + ' channels, ' + p.count + ' programs; ' + notes.join('; ') + (firstErr ? '; its own guide failed: ' + (firstErr.message || 'failed') : '') + (partial ? '; cut: ' + partial : p.partial ? '; cut: over ' + EPG_TOTAL + ' programs' : '') + (p.per < EPG_PER ? '; ' + p.per + ' programs a channel' : '')); g.state = 'ready'; g.at = Date.now();
                 var f = epgFile(g.url);
                 if (f) {
-                    var keep = { url: g.url, k: g.k, at: g.at, keys: g.keys, progs: g.progs, icons: g.icons, channels: g.channels, programmes: g.programmes, partial: g.partial };
+                    var keep = { v: EPG_FORMAT, url: g.url, k: g.k, at: g.at, keys: g.keys, progs: g.progs, icons: g.icons, channels: g.channels, programmes: g.programmes, partial: g.partial };
                     require('fs').writeFile(f + '.part', JSON.stringify(keep), { mode: 384 }, function (e) {   // (written whole, then swapped in)
                         if (e) { log('TV guide not saved (' + (e.code || e.message) + ')'); return; }
                         require('fs').rename(f + '.part', f, function (e2) { if (e2) { log('TV guide not saved (' + (e2.code || e2.message) + ')'); } });
@@ -6943,7 +7015,7 @@ function epgPump() {
             }
         } catch (e) { g.state = 'failed'; g.error = 'failed'; g.at = Date.now(); }
         epgPump();
-    });
+    }
 }
 // The guide ticket: for an app that can't read the service's token (its header instead), asked
 // for once (/epg/ticket, a GET with the header: what that app reaches everything with; a web page,
@@ -6992,7 +7064,7 @@ function epgControl(req, res, path, query) {
     var u = String(q.u || '').trim();
     if (!/^https?:\/\/[^\s]+$/i.test(u) || u.length > 2000) { send(res, 400, 'text/plain', 'bad guide link'); return; }
     if (path === '/epg/load') {
-        if (!/^[A-Za-z0-9_-]{4,24000}$/.test(q.k || '')) { send(res, 400, 'text/plain', 'bad channels'); return; }
+        if (!/^[A-Za-z0-9_-]{4,}$/.test(q.k || '') || q.k.length > EPG_K_MAX) { send(res, 400, 'text/plain', 'bad channels'); return; }
         send(res, 200, 'application/json', JSON.stringify(epgView(epgStart(u, q.k, q.force === '1'))));
         return;
     }
@@ -7004,9 +7076,13 @@ function epgControl(req, res, path, query) {
         if (!(g && g.keys)) { out._unread = true; }
         else {
             var icons = {}, bytes = 0;   // (an answer kept to EPG_GET_BYTES: past it, said to be partial)
-            String(q.ids || '').split('|').slice(0, 300).forEach(function (key) {
+            var asked = String(q.ids || '').split('|');
+            if (asked.length > EPG_ASK_KEYS) { out._cut = asked.slice(EPG_ASK_KEYS); }   // (past the limit: not looked at, so asked again, never taken as none)
+            asked.slice(0, EPG_ASK_KEYS).forEach(function (key) {
                 var own = Object.prototype.hasOwnProperty;   // (a saved guide's tables have a prototype: own entries only, of the right kind)
                 var id = key && own.call(g.keys, key) && typeof g.keys[key] === 'string' ? g.keys[key] : null;
+                if (!id && key && own.call(g.keys, key) && g.keys[key] === 0) { (out._amb = out._amb || []).push(key); }   // (two countries' channels: neither)
+                if (id && q.match === '1') { (out._ids = out._ids || Object.create(null))[key] = id; }   // (Diagnostics › TV guide matches: which channel answered)
                 var l = id && own.call(g.progs, id) && Array.isArray(g.progs[id]) ? g.progs[id] : null;
                 if (id && g.icons && own.call(g.icons, id) && typeof g.icons[id] === 'string') { icons[key] = g.icons[id]; }
                 if (!id) { return; }

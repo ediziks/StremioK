@@ -330,8 +330,9 @@ var YTPlay = (function () {
     function epgLoad(u, k, force) {
         return epgAsk('/epg/load', 'u=' + encodeURIComponent(u) + '&k=' + k + (force ? '&force=1' : ''), 65536);
     }
-    function epgGet(u, keys, from, to, max) {
-        return epgAsk('/epg/get', 'u=' + encodeURIComponent(u) + '&ids=' + encodeURIComponent(keys.join('|')) + '&from=' + from + '&to=' + to + (max ? '&max=' + max : ''), 4194304);
+    // (match: also _ids, the guide's channel that answered each key; Diagnostics › TV guide matches)
+    function epgGet(u, keys, from, to, max, match) {
+        return epgAsk('/epg/get', 'u=' + encodeURIComponent(u) + '&ids=' + encodeURIComponent(keys.join('|')) + '&from=' + from + '&to=' + to + (max ? '&max=' + max : '') + (match ? '&match=1' : ''), 4194304);
     }
     // Whether YouTube gives the video out to the service (it refuses some uploads to the player
     // the service asks as): false when it says no; true when it does, or no answer came (the

@@ -423,6 +423,7 @@
         diagnostics: { title: U.t('Diagnostics'), rows: [
             [U.t('Logs'), U.t('Recent problems (failed downloads, playback and script errors), secrets masked; how long launches took'), 'logs'],
             [U.t('Storage'), U.t('What StremioK keeps on the TV; the TV’s database: on or off, tidying it up; clearing saved copies'), 'storage'],
+            [U.t('TV guide matches'), U.t('Which guide channel each IPTV channel got, what’s on it now, and which got none'), 'guidematch'],
             [U.t('Installed apps'), U.t('The TV’s apps with their IDs; OK on one opens it'), 'tvapps']] }
     };
 
@@ -469,6 +470,7 @@
         else if (SETTINGS_GROUPS[_settingsSection]) { settingsGroup(wrap, _settingsSection); }
         else if (_settingsSection === 'logs') { settingsLogs(wrap); }
         else if (_settingsSection === 'storage') { settingsStorage(wrap); }
+        else if (_settingsSection === 'guidematch') { settingsGuideMatch(wrap); }
         else if (_settingsSection === 'tvapps') { settingsTvApps(wrap); }
         else if (_settingsSection === 'usb') { settingsUsb(wrap); }
         else if (_settingsSection === 'netfolders') { settingsNetFolders(wrap); }
@@ -1468,7 +1470,7 @@
         if (!g) { return typeof EPG !== 'undefined' && EPG.available && EPG.available() ? U.t('no TV guide') : ''; }
         if (g.state === 'ready') {
             var d = new Date(g.at);
-            return U.t('TV guide: {channels}, {programs} programs', { channels: U.tn(g.channels, '{n} channel', '{n} channels', { n: thousands(g.channels) }), programs: thousands(g.programmes) }) + (g.partial ? ' ' + U.t('(part of it: too large)') : '') +
+            return U.t('TV guide: {channels}, {programs} programs', { channels: U.tn(g.channels, '{n} channel', '{n} channels', { n: thousands(g.channels) }), programs: thousands(g.programmes) }) + (g.partial ? ' ' + U.t('(part of it: too large)') : '') + (/#extra=/.test(g.url || '') ? ' ' + U.t('(with extra guides)') : '') +
                 (g.at ? ', ' + U.t('read {when}', { when: U.dayLabel(g.at) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes()) }) : '') + (g.error ? ' ' + U.t('(the last read failed: {why})', { why: g.error }) : '');
         }
         if (g.state === 'failed') { return '⚠ ' + U.t('TV guide: {why}', { why: g.error || U.t('couldn’t be read') }); }
@@ -1727,6 +1729,14 @@
                 mine.forEach(function (p) { Stremio.iptvReload(p.id).then(function () { refreshAddonRows('local:iptv'); }); });
             }
         }));
+
+        if (typeof EPG !== 'undefined' && EPG.setExtraGuides && EPG.available()) {   // (free guides per country, for channels a playlist's guide leaves empty: js/epg.js, EXTRA)
+            wrap.appendChild(subPickRow(U.t('Extra TV guides'), [['auto', U.t('On (by your channels’ countries)')], ['off', U.t('Off')]], 'extra', {
+                warning: U.t('Free TV guides from epgshare01 for Turkey, the UK and the US fill in the channels your playlist’s own guide has no programs for. Reading them takes longer.'),
+                get: function () { return { extra: EPG.extraGuides() ? 'auto' : 'off' }; },
+                set: function (c) { EPG.setExtraGuides(c.extra !== 'off'); EPG.start(); refreshAddonRows('local:iptv'); }
+            }));
+        }
 
         if (typeof StVod !== 'undefined' && StVod.keepMinutes) {   // (what the service keeps of a portal's films and series)
             wrap.appendChild(subPickRow(U.t('Stalker films and series'), [['10', U.t('Kept 10 minutes')], ['5', U.t('Kept 5 minutes')], ['0', U.t('Off (asked each time)')]], 'keep', {
@@ -2612,6 +2622,56 @@
         }
         startupLines(wrap);
         focusSettings();
+    }
+    // ----- Diagnostics › TV guide matches: each IPTV channel's guide channel (EPG.matchReport),
+    // the ones without one first; all of them as a text file for the phone -----
+    var MATCH_ROWS = 300;   // (on the TV: the rest in the text file)
+    function settingsGuideMatch(wrap) {
+        wrap.appendChild(U.el('h2', null, U.t('Diagnostics  ›  TV guide matches')));
+        var hint = U.el('div', 'hint', U.t('Loading…'));
+        wrap.appendChild(hint);
+        focusSettings();
+        if (typeof EPG === 'undefined' || !EPG.matchReport) { hint.textContent = U.t('no TV guide'); return; }
+        EPG.matchReport().then(function (rep) {
+            if (_settingsSection !== 'guidematch' || !document.body.contains(wrap)) { return; }
+            var ORDER = { unclear: 0, none: 1, failed: 2, empty: 3, noguide: 4, ok: 5 }, n = { ok: 0, empty: 0, unclear: 0, none: 0, failed: 0, noguide: 0 };
+            var rows = rep.rows.slice().sort(function (a, b) { return (ORDER[a.state] - ORDER[b.state]) || ('' + a.c.name).localeCompare('' + b.c.name); });
+            rows.forEach(function (r) { n[r.state]++; });
+            function says(r) {
+                return r.state === 'ok' ? U.t('Now: {title}', { title: r.now }) : r.state === 'empty' ? U.t('In the guide, nothing on now')
+                    : r.state === 'unclear' ? U.t('Not matched: the guide has channels of this name in several countries')
+                    : r.state === 'none' ? U.t('Not in the guide') : r.state === 'noguide' ? U.t('Its playlist has no TV guide') : U.t('Not answered');
+            }
+            function where(r) { return [r.c.group || '', EPG.countryOf ? EPG.countryOf(r.c).toUpperCase() : ''].filter(Boolean).join(' · '); }
+            hint.textContent = U.t('{ok} of {total} channels have a guide now. Not matched: {none}; unclear: {unclear}; in the guide but nothing on now: {empty}; no guide: {noguide}.',
+                { ok: n.ok, total: rows.length, none: n.none + n.failed, unclear: n.unclear, empty: n.empty, noguide: n.noguide });
+            rep.guides.forEach(function (g) {
+                wrap.appendChild(U.el('div', 'hint', g.host + ': ' + g.state + ', ' + U.tn(g.channels, '{n} channel', '{n} channels', { n: g.channels }) + (g.partial ? ' ' + U.t('(part of it: too large)') : '')));
+            });
+            function text() {
+                var lines = ['StremioK TV guide matches', hint.textContent, ''];
+                rep.guides.forEach(function (g) { lines.push('Guide ' + g.host + ': ' + g.state + ', ' + g.channels + ' channels' + (g.partial ? ' (partial)' : '')); });
+                lines.push('', 'state | channel | playlist name | group · country | guide channel | key | now');
+                rows.forEach(function (r) {
+                    var raw = ((r.c.variants && r.c.variants[0] && r.c.variants[0].rawName) || r.c._rawName || r.c.name || '');
+                    lines.push([r.state, r.c.name || '', raw, where(r), r.gid || '', r.key || '', r.now || ''].join(' | '));
+                });
+                return (lines.join('\n') + '\n').slice(0, 1400000);   // (the phone page's limit: 1.5 MB)
+            }
+            var send = U.el('div', 'addon-item focusable');
+            send.appendChild(U.el('div', 'a-name', U.t('⇧  Send to your phone')));
+            send.appendChild(U.el('div', 'a-url', U.t('Every channel’s match as a text file (guide links left out)')));
+            send.__onselect = function () { V.phoneGive(U.t('TV guide matches'), text(), U.t('Channel names only: no links or passwords.'), 'logs'); };
+            wrap.appendChild(send);
+            rows.slice(0, MATCH_ROWS).forEach(function (r) {
+                var el = U.el('div', 'addon-item focusable diag-row');
+                el.appendChild(U.el('div', 'a-name', (r.state === 'ok' ? '✓  ' : r.state === 'empty' ? '·  ' : '✗  ') + (r.c.name || '') + (r.gid ? '   →   ' + r.gid : '')));
+                el.appendChild(U.el('div', 'a-url', [where(r), says(r)].filter(Boolean).join('   ·   ')));
+                wrap.appendChild(el);
+            });
+            if (rows.length > MATCH_ROWS) { wrap.appendChild(U.el('div', 'hint', U.t('{n} more in the text file', { n: rows.length - MATCH_ROWS }))); }
+            focusSettings();
+        }, function () { if (_settingsSection === 'guidematch') { hint.textContent = U.t('Not answered'); } });
     }
     // ----- Diagnostics › Storage: the database on or off, what's using the storage, tidying the
     // database up, giving up the copies that can be made again -----

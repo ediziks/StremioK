@@ -687,8 +687,14 @@ An Xtream account's films and series come with its channels, as do a Stalker por
 - **Where it comes from:** the guide link a playlist names (`url-tvg`), or an Xtream
   playlist's (`get.php`) own guide. *Guide link* (OK on a playlist) sets another, or puts back
   the automatic one. It's read again every 6 hours, or at once with the playlist's *Reload* (its limits: [TV guide](TECHNICAL-REFERENCE.md#tv-guide)).
-- A channel is matched by its `tvg-id`, else by its name. One without a logo in its playlist
-  gets the guide's.
+- A channel is matched by its `tvg-id`, else by its name, in its own country: "TR| FOX" never
+  gets an American FOX's guide, and a name two countries' channels share gets neither. One
+  without a logo in its playlist gets the guide's.
+- **Extra TV guides** (Settings › IPTV, on by default): when a playlist has Turkish, UK or US
+  channels, free guides from epgshare01 for those countries are read too, and fill in the
+  channels the playlist's own guide has no programs for.
+- **Settings › Diagnostics › TV guide matches** shows which guide channel each channel got, what's
+  on it now, and which got none (and why); *Send to your phone* gives it as a text file.
 - **Channel cards** show what's on now and how far along it is; Home's details strip adds its
   description and what's next.
 - **While a channel plays,** the bar at the bottom shows Now and Next.

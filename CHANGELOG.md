@@ -17,6 +17,13 @@ What changed in each version of StremioK, newest first. How everything works is 
   seekable streams (*Catch-up time offset* on the account adjusts time zone shifts).
 - **In-player channel drawer** (`LEFT` or `UP › ≡ Channels` while watching live TV): browse
   groups and channels with Now/Next programs and zap without leaving playback.
+- **TV guide: more channels, fewer wrong ones.** A channel is matched in its own country
+  (`TR|`, `|UK|`, `[NL]` prefixes understood; a name two countries share gets neither), big
+  guides are read whole (up to 200 MB, 120,000 programs shared fairly between channels), and
+  *Extra TV guides* (Settings › IPTV, on) fill in Turkish, UK and US channels the playlist's own
+  guide has no programs for ([TV guide](docs/USER-GUIDE.md#tv-guide)).
+- **Settings › Diagnostics › TV guide matches:** each channel's guide match, what's on now, and
+  which got none, also as a text file on your phone.
 
 ## 2.4.2 — 2026-11-16
 - **Built-in audio and subtitle tracks named from the file** more often: also when the TV lists

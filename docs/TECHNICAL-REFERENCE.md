@@ -473,12 +473,23 @@ channels where it gives one; the rest is read from the source's name and file.
 - **Where it comes from:** a playlist's typed *Guide link*, else its `url-tvg` / `x-tvg-url`,
   else an Xtream `get.php` link's `xmltv.php` (also in place of a guide the playlist names on its
   own server without the login).
-- **Read by the service:** gzipped or not; up to 60 MB, 200 MB unpacked, 5 minutes.
-- **Only your channels:** the app sends their keys (`tvg-id`, else the name, plain) as a bitset,
-  in a POST's body (a newer TV's service reads 8 KB of a request's address and headers:
+- **Extra guides:** for a playlist with 10 or more Turkish, UK or US channels, epgshare01's
+  `TR1`/`TR3`, `UK1`, `US2`/`US_SPORTS1` (Settings › IPTV › *Extra TV guides*). The app adds them
+  to the guide's link after `#extra=` (never sent); the service reads them after the playlist's
+  own, and an extra guide's channel takes a key only where the earlier guide's channel has no
+  programs (then all of that channel's keys, its `tvg-id`'s too).
+- **Read by the service:** gzipped or not; each source up to 200 MB, 400 MB unpacked, 5 minutes.
+  Its log says each source's size and time, and why one was cut.
+- **Keys:** a `tvg-id` or a name, its country taken apart (`TR:`, `|UK|`, `[NL]`, `NL -` at the
+  start, `.tr` or ` MX` at the end); a guide's channel answers with its key plain and in its
+  country (`.~` when its guide names none), a channel asks in its country and `.~`. A plain key
+  two countries' channels share answers neither (unclear).
+- **Only your channels:** the app sends their keys as a bitset (two bits a key, up to 1,048,576
+  bits), in a POST's body (a newer TV's service reads 8 KB of a request's address and headers:
   thousands of channels' keys don't fit there).
 - **What's kept:** programs from 2 hours ago to 30 hours ahead, 150 a channel (held to that as
-  it's read), 60,000 in all, each with its picture (`<icon>`). A channel's `<icon>` stands in
+  it's read), 120,000 in all: past that, each channel is cut to an even share (at least 4: the
+  one on now, the one before, then the next ones), each with its picture (`<icon>`). A channel's `<icon>` stands in
   for a missing `tvg-logo` (none into your home network from a guide on the internet).
 - **Answers:** kept to 2 MB; the Guide tab asks 20 channels at a time. A channel whose programs
   don't come (no answer, or past the 2 MB) stays on the Guide tab and is asked again 30 seconds

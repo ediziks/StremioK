@@ -882,7 +882,7 @@ var IPTV = (function () {
             url: c.url, group: cleanGrp || c.group, type: c.type,
             ua: c.ua || '', ref: c.ref || '', cookie: c.cookie || '', drm: c.drm || null,
             archive: !!c.archive, archiveDays: +c.archiveDays || 0, streamId: +c.streamId || 0,
-            _yt: !!c._yt, vod: !!c.vod, _playlistId: c._playlistId
+            _yt: !!c._yt, vod: !!c.vod, _playlistId: c._playlistId, country: c._country || ''
         };
     }
     function tidyChannels(rawList, cfg) {

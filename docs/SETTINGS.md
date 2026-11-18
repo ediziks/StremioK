@@ -19,7 +19,7 @@ In a list you order, ▲ / ▼ move an item one place and ⇈ / ⇊ move it to t
   [Formats](#formats), [Private viewing](#private-viewing)
 - [Appearance](#appearance)
 - [Home](#home)
-- [Diagnostics](#diagnostics): [Logs](#logs), [Storage](#storage),
+- [Diagnostics](#diagnostics): [Logs](#logs), [TV guide matches](#tv-guide-matches), [Storage](#storage),
   [Installed apps](#installed-apps)
 - [Profiles](#profiles)
 
@@ -88,6 +88,7 @@ Each says whether its guide was read. See [IPTV and radio](USER-GUIDE.md#iptv-an
 |---------|---------|--------------|
 | *Auto-refresh* | **Off**, Every hour, Every 3 hours, Every 6 hours, Every 12 hours | Everything read again, as *Reload* does. |
 | *Largest playlist* | **20 MB**, 40, 60, 100 MB | Browser download limit (1,500 channels per MB). Raw M3U playlists stream through StremioK's service up to 250 MB. |
+| *Extra TV guides* | **On**, Off | Free guides from epgshare01 for Turkey, the UK and the US (for a playlist with 10 or more channels of that country), read after the playlist's own guide: they fill in the channels it has no programs for. Reading takes longer. |
 | *Stalker channels* | **First 100 pages**, Whole portal | How much of a portal is read (100 pages: about 1,400). *Whole portal*: minutes each *Reload*; a portal may block such a MAC. *Channel groups*: only those. |
 | *Stalker films and series* | **Kept 10 minutes**, Kept 5 minutes, Off | How long a portal's row, category or search is kept before it's asked again. |
 
@@ -319,6 +320,13 @@ it's installed and the TV's model and Tizen version, to attach to a report). Whe
 StremioK closed without being exited (a crash, or the TV closing it), the next launch says so,
 with its last steps. *Startup* shows how long this launch and the one before took. See
 [Troubleshooting](TROUBLESHOOTING.md#where-to-look).
+
+### TV guide matches
+
+Each IPTV channel's TV guide match: the guide channel it got and what's on now, or why none (not
+in the guide, in it but nothing on now, unclear: the name is two countries' channels', or its
+playlist has no guide). A summary and a line per guide first, then up to 300 channels, problems
+first; *Send to your phone* gives every channel as a text file (no guide links).
 
 ### Storage
 
