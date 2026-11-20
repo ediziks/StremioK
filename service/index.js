@@ -1068,6 +1068,35 @@ function tokenDir() {
     }
     return UNDER_TIZENBREW ? null : '/opt/usr/home/owner/apps_rw/StremioK01/data';
 }
+// Where saved copies go (playlists, guides, Xtream lists): the first of these folders a file can
+// really be written in, tried once: the private folder (tokenDir), the sideloaded app's own data
+// folder (tokenDir's can be read-only there, as on a 2024 TV), then a folder in the system's
+// temporary one (emptied on a restart: copies read again). null: none, nothing saved.
+var _saveDir;
+function saveDirFrom(list, fs) {
+    for (var i = 0; i < list.length; i++) {
+        var d = list[i], probe = d && d + '/.stremiok-write-test';
+        if (!d) { continue; }
+        try {
+            try { fs.mkdirSync(d, 448); } catch (e0) {}   // (0700; it may be there already)
+            fs.writeFileSync(probe, 'ok', { mode: 384 });
+            fs.unlinkSync(probe);
+            return d;
+        } catch (e) {}
+    }
+    return null;
+}
+function saveDir() {
+    if (_saveDir !== undefined) { return _saveDir; }
+    var os = null;
+    try { os = require('os'); } catch (e) {}
+    var list = [tokenDir()];
+    if (!UNDER_TIZENBREW) { list.push('/opt/usr/home/owner/apps_rw/StremioK01/data'); }
+    if (os && os.tmpdir) { list.push(os.tmpdir() + '/stremiok-' + (UNDER_TIZENBREW ? 'tb' : 'app')); }
+    _saveDir = saveDirFrom(list, require('fs'));
+    log('Saved copies: ' + (_saveDir || 'nowhere (no folder could be written)'));
+    return _saveDir;
+}
 var _fsToken = null;
 (function () {
     try {
@@ -2051,7 +2080,7 @@ function openPart(fs, part, append, cb) {
 // never on the drive, where a prepared file could be a link elsewhere (read: its contents sent
 // as If-Range; written: overwritten). None to keep it in (TizenBrew): downloads are closed there.
 var DL_VALIDATORS = 64;
-function dlValFile() { var d = tokenDir(); return d ? d + '/dl-validators.json' : null; }
+function dlValFile() { var d = saveDir(); return d ? d + '/dl-validators.json' : null; }
 function dlValAll() {
     var f = dlValFile(), o = null;
     if (!f) { return {}; }
@@ -5270,12 +5299,12 @@ function xtvGet(url, onText, cb) {
 // The saved list: xtv-<hash>.jsonl in the app's folder, a line for its key and date, then a line a
 // title, written and read in small pieces (the service also relays live channels, YouTube and
 // guides: nothing here holds it up for long). Saved lists not used for XTV_FILE_MS are deleted.
-function xtvFile(key) { var d = tokenDir(); return d ? d + '/xtv-' + epgHash(key).toString(36) + '.jsonl' : null; }
+function xtvFile(key) { var d = saveDir(); return d ? d + '/xtv-' + epgHash(key).toString(36) + '.jsonl' : null; }
 var _xtvSwept = false, XTV_FILES = /^xtv-[0-9a-z]+\.jsonl?(\.part)?$/;
 function xtvSweep() {
     if (_xtvSwept) { return; }
     _xtvSwept = true;
-    var d = tokenDir(), fs = require('fs');
+    var d = saveDir(), fs = require('fs');
     if (!d) { return; }
     fs.readdir(d, function (err, names) {
         (err ? [] : names).filter(function (n) { return XTV_FILES.test(n); }).forEach(function (n) {
@@ -6304,11 +6333,11 @@ function m3uSrc(q) {
     return { kind: 'xt', base: base, user: String(q.user), pass: String(q.pass), fmt: fmt, key: 'x|' + base + '|' + q.user + '|' + q.pass + '|' + fmt };
 }
 function m3uHost(u) { try { return urllib.parse(u).hostname || '?'; } catch (e) { return '?'; } }   // (never the link: an account's login is in it)
-function m3uFile(key, ext) { var d = tokenDir(); return d ? d + '/m3u-' + epgHash(key).toString(36) + '.' + ext : null; }
+function m3uFile(key, ext) { var d = saveDir(); return d ? d + '/m3u-' + epgHash(key).toString(36) + '.' + ext : null; }
 function m3uSweep() {
     if (_m3uSwept) { return; }
     _m3uSwept = true;
-    var d = tokenDir(), fs = require('fs');
+    var d = saveDir(), fs = require('fs');
     if (!d) { return; }
     fs.readdir(d, function (err, names) {
         (err ? [] : names).filter(function (n) { return M3U_FILES.test(n); }).forEach(function (n) {
@@ -6515,7 +6544,7 @@ function iptvControl(req, res, path, query) {
     var ks = String(q.groups || '').split(',').filter(function (k) { return /^[\w.-]{1,40}$/.test(k); }).slice(0, M3U_KEYS);
     m3uServe(res, x, ks, Math.max(0, Math.min(+q.max || 0, M3U_MAX)));
 }
-function epgFile(url) { var d = tokenDir(); return d ? d + '/epg-' + epgHash(url).toString(36) + '.json' : null; }
+function epgFile(url) { var d = saveDir(); return d ? d + '/epg-' + epgHash(url).toString(36) + '.json' : null; }
 // A saved guide is read only up to EPG_FILE_MAX (a bigger one is deleted); one saved more than
 // EPG_KEEP_MS ago, of any guide, is deleted (looked at once, as the first guide is asked for).
 var EPG_FILE_MAX = 32 * 1048576, EPG_KEEP_MS = 2 * 86400000, _epgSwept = false;
@@ -6523,7 +6552,7 @@ function epgSweep() {
     xtvSweep();
     if (_epgSwept) { return; }
     _epgSwept = true;
-    var d = tokenDir(), fs = require('fs');
+    var d = saveDir(), fs = require('fs');
     if (!d) { return; }
     fs.readdir(d, function (err, names) {
         (err ? [] : names).filter(function (n) { return /^epg-[0-9a-z]+\.json(\.part)?$/.test(n); }).forEach(function (n) {
@@ -6645,7 +6674,7 @@ function hasTicket(query) {
 // Settings › Storage: the saved guides (/epg/files: how many, their size), and Clear saved
 // copies (/epg/clear, a POST: every saved guide deleted, and those kept here let go).
 function epgSavedFiles(re) {
-    var d = tokenDir(), fs = require('fs'), out = { count: 0, bytes: 0 };
+    var d = saveDir(), fs = require('fs'), out = { count: 0, bytes: 0 };
     if (!d) { return out; }
     try {
         fs.readdirSync(d).filter(function (n) { return (re || /^epg-[0-9a-z]+\.json(\.part)?$/).test(n); }).forEach(function (n) {
@@ -6655,7 +6684,7 @@ function epgSavedFiles(re) {
     return out;
 }
 function epgClear() {
-    var d = tokenDir(), files = epgSavedFiles(), lists = epgSavedFiles(XTV_FILES), m3us = epgSavedFiles(M3U_FILES);
+    var d = saveDir(), files = epgSavedFiles(), lists = epgSavedFiles(XTV_FILES), m3us = epgSavedFiles(M3U_FILES);
     (files.names || []).concat(lists.names || [], m3us.names || []).forEach(function (n) { try { require('fs').unlinkSync(d + '/' + n); } catch (e) {} });
     _m3u = Object.create(null);   // (IPTV playlists read here: read again when asked for)
     _epg = Object.create(null); _epgQueue = [];   // (one being read: not saved, see epgPump)
@@ -6669,7 +6698,7 @@ function epgControl(req, res, path, query) {
         send(res, 200, 'application/json', JSON.stringify({ ticket: _epgTicket }));
         return;
     }
-    if (path === '/epg/files') { var sf = epgSavedFiles(), xf = epgSavedFiles(XTV_FILES), mf = epgSavedFiles(M3U_FILES); send(res, 200, 'application/json', JSON.stringify({ count: sf.count, bytes: sf.bytes, xtv: { count: xf.count + mf.count, bytes: xf.bytes + mf.bytes } })); return; }   // (IPTV playlists read here: with the Xtream lists)
+    if (path === '/epg/files') { var sf = epgSavedFiles(), xf = epgSavedFiles(XTV_FILES), mf = epgSavedFiles(M3U_FILES); send(res, 200, 'application/json', JSON.stringify({ count: sf.count, bytes: sf.bytes, xtv: { count: xf.count + mf.count, bytes: xf.bytes + mf.bytes }, dir: saveDir() })); return; }   // (IPTV playlists read here: with the Xtream lists)
     if (path === '/epg/clear') {
         if (req.method !== 'POST') { send(res, 405, 'text/plain', 'POST only'); return; }
         send(res, 200, 'application/json', JSON.stringify({ cleared: epgClear() }));

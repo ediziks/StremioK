@@ -545,6 +545,20 @@ async function run() {
         assert.strictEqual(xp.keys['i:kanald.tr'], 'kanald.tr', 'Kanal D keeps its own');
     });
 
+    await runTest('Saved copies: the first folder that can really be written', () => {
+        const svc = loadService();
+        const written = [];
+        const fsMock = (ok) => ({
+            mkdirSync: () => {},
+            writeFileSync: (p) => { if (!ok.some((d) => p.indexOf(d + '/') === 0)) { const e = new Error('EROFS'); e.code = 'EROFS'; throw e; } written.push(p); },
+            unlinkSync: () => {}
+        });
+        assert.strictEqual(svc.saveDirFrom(['/ro/data', '/rw/data', '/tmp/x'], fsMock(['/rw/data', '/tmp/x'])), '/rw/data', 'a read-only app folder is skipped');
+        assert.strictEqual(svc.saveDirFrom([null, '/tmp/x'], fsMock(['/tmp/x'])), '/tmp/x', 'no private folder (TizenBrew): the temporary one');
+        assert.strictEqual(svc.saveDirFrom(['/ro/a', '/ro/b'], fsMock([])), null, 'none writable: nothing saved');
+        assert.ok(written.every((p) => /\.stremiok-write-test$/.test(p)), 'only the probe file is written');
+    });
+
     // A playlist read by the TV itself (no service): two copies of a channel, merged
     function iptvWith(m3u, tidy) {
         const ctx = loadBrowserScript('js/iptv.js', {});

@@ -10,6 +10,9 @@ What changed in each version of StremioK, newest first. How everything works is 
   resolution and frame rate the TV measured (*1080p50*, *720p*), ahead of what their names say.
   The player's tags show the frame rate.
 - **⟲ Recent** on the IPTV tab: the last 25 channels you played, after Favorites.
+- **Fixed: saved copies on a sideloaded 2024 TV** (playlists read by the service, guides, Xtream
+  lists): the app's own folder is read-only there, so nothing was kept and a big playlist timed
+  out. They go to the first folder that can be written (Settings › Storage counts them).
 - **Fixed:** an Xtream channel's next copy opened the first copy again (its link was kept);
   in a desktop browser, a source that didn't start closed the player instead of trying the next.
 - Development: `tests/run.js` (ES5 scan, TV guide, the above), `tools/` (desktop runner, TV loop).
