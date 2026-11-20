@@ -10,6 +10,8 @@ What changed in each version of StremioK, newest first. How everything works is 
   resolution and frame rate the TV measured (*1080p50*, *720p*), ahead of what their names say.
   The player's tags show the frame rate.
 - **⟲ Recent** on the IPTV tab: the last 25 channels you played, after Favorites.
+- **Fixed: the IPTV tab missing from the menu** after a start, while a big playlist was read and
+  you were on another screen (Settings): it shows once channels are read, its rows built then.
 - **Merging, tidier:** a "+1" channel, a regional or other-language feed ("( US )", "(SP)") and
   "CANAL+ 360" stay apart from the main channel; "[BK]", mirror and spare copies rank last; a
   merged channel shows in its plain group, not a 4K/VIP one; the suggested hide list adds "+18"
