@@ -10,6 +10,9 @@ What changed in each version of StremioK, newest first. How everything works is 
   resolution and frame rate the TV measured (*1080p50*, *720p*), ahead of what their names say.
   The player's tags show the frame rate.
 - **⟲ Recent** on the IPTV tab: the last 25 channels you played, after Favorites.
+- **Fixed: copies from other countries merged** in groups named "EU | UK …": the region was
+  taken as the country, so FR|, ES| and TR| copies joined the UK channel, and *Countries first*
+  saw every such group as "EU". The region is skipped, and a copy's own prefix comes first.
 - **Fixed: saved copies on a sideloaded 2024 TV** (playlists read by the service, guides, Xtream
   lists): the app's own folder is read-only there, so nothing was kept and a big playlist timed
   out. They go to the first folder that can be written (Settings › Storage counts them).

@@ -980,10 +980,17 @@ var IPTV = (function () {
         ARAB: 'ARAB', ARABIC: 'ARAB', LATINO: 'LATINO', LATIN: 'LATINO' };
     var NOT_COUNTRY = { TV: 1, HD: 1, SD: 1, FHD: 1, UHD: 1, '4K': 1, '8K': 1, IP: 1, FX: 1, VIP: 1, RAW: 1, PPV: 1, VOD: 1, NEW: 1, ALL: 1 };
     function countryCode(w) { w = String(w || '').toUpperCase(); return COUNTRY_WORDS[w] || w; }
+    // A region before the country ("EU | UK DOCUMENTARY", "INT: TR …") isn't one: the word after
+    // it is, a country's name or code ("UK", "TURK"), even before a space.
+    var REGION_WORDS = { EU: 1, EUR: 1, EUROPE: 1, INT: 1, WW: 1, WORLD: 1, AF: 1, AFRICA: 1, AS: 1, ASIA: 1, AM: 1, LATAM: 1 };
     function countryOf(text) {
         var t = String(text || '').replace(/^[\s\[({|┃│#*=\-]+/, ''), m = /^([A-Za-z]{2,12})([\s]*[:|\-┃│\/\])]|$)/.exec(t);
         if (!m) { return ''; }
         var w = m[1].toUpperCase();
+        if (REGION_WORDS[w] && m[2]) {
+            var n = /^([A-Za-z]{2,12})(?=[\s:|\-┃│\/\])]|$)/.exec(t.slice(m[0].length).replace(/^[\s\[({|┃│#*=\-]+/, ''));
+            return n && COUNTRY_WORDS[n[1].toUpperCase()] ? COUNTRY_WORDS[n[1].toUpperCase()] : '';
+        }
         if (COUNTRY_WORDS[w]) { return COUNTRY_WORDS[w]; }
         return w.length === 2 && !NOT_COUNTRY[w] && m[2] ? w : '';
     }
@@ -1026,7 +1033,7 @@ var IPTV = (function () {
         out.forEach(function (c) {
             var plain = plainName(c.name);
             if (c.guideOnly || plain.length < 2) { merged.push(c); return; }
-            var k = c.type + '|' + (countryOf(c.group) || countryOf(c.name)) + '|' + plain.toLowerCase();
+            var k = c.type + '|' + (countryOf(c.name) || countryOf(c.group)) + '|' + plain.toLowerCase();   // (the copy's own country first: "FR| DISCOVERY" in an "EU | UK …" group is French)
             var m = byKey[k];
             if (!m) { m = byKey[k] = { first: c, copies: [], name: plain }; merged.push(m); }
             m.copies.push(c);

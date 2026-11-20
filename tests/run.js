@@ -591,6 +591,25 @@ async function run() {
         assert.strictEqual(list[0]._fallbacks[0].url, 'http://a.example/show-hd.m3u8', 'best: the rest as fallbacks, in measured order');
     });
 
+    await runTest('Countries: a region before the country, and copies merged only within a country', async () => {
+        const c0 = loadBrowserScript('js/iptv.js');
+        const co = (t) => c0.IPTV.countryOf(t);
+        assert.strictEqual(co('EU | UK DOCUMENTARY'), 'UK'); assert.strictEqual(co('EU | TURK ULUSAL'), 'TR');
+        assert.strictEqual(co('EU | MY CHANNELS'), '', 'a region and no country: none'); assert.strictEqual(co('UK| DISCOVERY'), 'UK');
+        assert.strictEqual(co('TR: FOX'), 'TR'); assert.strictEqual(co('EU|NL SPORT'), 'NL');
+        const m3u = '#EXTM3U\n' + [['EU | UK DOCUMENTARY', 'UK| DISCOVERY CHANNEL FHD'], ['EU | UK DOCUMENTARY', 'UK| DISCOVERY CHANNEL SD'],
+            ['EU | FR DOCUMENTAIRE', 'FR| DISCOVERY CHANNEL HD'], ['EU | UK DOCUMENTARY', 'ES| DISCOVERY CHANNEL HD'], ['EU | TURK ULUSAL', 'TRT 1 HD'], ['EU | TURK ULUSAL', 'TRT 1 SD']]
+            .map((x, i) => '#EXTINF:-1 group-title="' + x[0] + '",' + x[1] + '\nhttp://a.example/' + i + '.m3u8').join('\n') + '\n';
+        const ctx = iptvWith(m3u, { merge: 'all', countries: ['TR', 'UK'] });
+        const d = await ctx.IPTV.load();
+        const disc = d.channels.filter((c) => /DISCOVERY/.test(c.name));
+        assert.strictEqual(disc.length, 3, 'UK, FR and ES apart: ' + disc.map((c) => c.name + '[' + (c._copies ? c._copies.length : 1) + ']').join(', '));
+        const uk = disc.filter((c) => c._copies)[0];
+        assert.ok(uk && uk._copies.length === 2 && uk._copies.every((x) => /^UK\|/.test(x.c.name)), 'the two UK copies merged');
+        assert.ok(d.channels.some((c) => c._copies && /TRT 1/.test(c.name)), 'no prefix: the group\'s country (TR) merges them');
+        assert.deepStrictEqual(Array.from(d.groups.map((g) => g.name)), ['EU | TURK ULUSAL', 'EU | UK DOCUMENTARY', 'EU | FR DOCUMENTAIRE'], 'Countries first sees through "EU |"');
+    });
+
     await runTest('Recent: a row after Favorites, newest first, a merged channel once', async () => {
         const ctx = iptvWith(M3U, { merge: 'all' });
         const d = await ctx.IPTV.load();
