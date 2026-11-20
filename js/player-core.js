@@ -317,11 +317,34 @@ var PlayerParts = {};
             (avplay.getCurrentStreamInfo() || []).forEach(function (x) {
                 var t = ('' + x.type).toUpperCase(), e = {};
                 try { e = typeof x.extra_info === 'string' ? JSON.parse(x.extra_info) : (x.extra_info || {}); } catch (er) {}
-                if (t === 'VIDEO') { out.height = +(e.Height || e.height) || 0; out.codec = e.fourCC || e.codec || ''; }
+                if (t === 'VIDEO') { out.height = +(e.Height || e.height) || 0; out.codec = e.fourCC || e.codec || ''; out.fps = parseFps(e.FrameRate || e.frameRate || e.fps || e.framerate); }
                 if (t === 'AUDIO') { out.audio = e.fourCC || e.codec || ''; out.channels = +(e.channels || e.Channels) || 0; }
             });
         } catch (er2) {}
         return out;
+    }
+    // The TV's frame rate ("50", "25000/1000", "29.97"): frames a second, or 0 when it says none
+    // that makes sense.
+    function parseFps(raw) {
+        if (raw === undefined || raw === null || raw === '') { return 0; }
+        var s = ('' + raw).trim(), frac = /^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/.exec(s);
+        var v = frac ? (+frac[2] > 0 ? +frac[1] / +frac[2] : 0) : (parseFloat(s) || 0);
+        if (!isFinite(v) || v < 10 || v > 120) { return 0; }
+        return Math.abs(v - Math.round(v)) < 0.02 ? Math.round(v) : Math.round(v * 100) / 100;
+    }
+    P.parseFps = parseFps;
+    // A live IPTV channel, LIVE_MEASURE_MS after it starts: what its link really plays as (the
+    // TV's report), shown in the tags and kept for ranking its channel's copies (IPTV.noteMeasured).
+    var LIVE_MEASURE_MS = 3000;
+    function measureLive(token) {
+        if (!S.isLive) { return; }
+        setTimeout(function () {
+            if (!S.active || token !== _playToken || !S.isLive) { return; }
+            S.actual = playerFormats();
+            renderTags();
+            var st = S.ctx && S.ctx.stream;
+            if (st && st.url && /^iptv:/.test(S.ctx.id || '') && typeof IPTV !== 'undefined' && IPTV.noteMeasured) { IPTV.noteMeasured(st.url, S.actual); }
+        }, LIVE_MEASURE_MS);
     }
     // An IPTV channel's TV guide (js/epg.js): { now, next } or null.
     function guideNow() { return (typeof EPG !== 'undefined' && S.ctx && /^iptv:/.test(S.ctx.id || '')) ? EPG.now(S.ctx.id) : null; }
@@ -415,7 +438,7 @@ var PlayerParts = {};
     // is what's learned from it (s.stream, through ctx.learnFor); the title, its episodes and
     // whether it's private stay.
     var SOURCE_FIELDS = ['url', 'variantUrl', 'initialQualityHeight', 'yt', 'ytLang', '_headers', 'localSubs', 'localFile', 'subExtra', 'sourceSubs', 'formatInfo', 'onStarted', 'onFailed', 'stream',
-        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix'];
+        '_reported', 'fromStart', 'resumeSec', 'switching', 'viaService', '_relay', '_relayFor', '_relayCc', '_relayFix', '_ownUrl', '_av'];   // (_ownUrl: each copy its own link, see formatStart)
     // keep: a source that didn't start gives way to the next (nextSourceOnFail): the same place to
     // resume, and Play from the start as it was.
     function replaceSource(s, keep) {
@@ -916,6 +939,7 @@ var PlayerParts = {};
                 renderOSD();
                 startTicker();
                 showOSD(false);
+                measureLive(token);
             }, function (err) {
                 if (!S.active || token !== _playToken) { return; }
                 U.spinner(false);
@@ -1074,6 +1098,7 @@ var PlayerParts = {};
             // (the page's player says little: its code, and a message where the engine has one)
             U.log('player', (loaded ? 'Stopped' : 'Not played') + ' (the page’s video player): ' + (['', 'aborted', 'a network error', 'the file couldn’t be decoded', 'a format or link it can’t play'][mcode] || 'an error') +
                 (me && me.message ? ' (' + me.message + ')' : '') + ' (' + where(url) + ')');
+            if (!loaded && nextSourceOnFail()) { return; }   // (one that never started: the next source, as with the TV's player)
             U.toast(U.t('Playback error')); exitLater();
         };
         if (drm) {
@@ -1464,11 +1489,12 @@ var PlayerParts = {};
     // Refused by the TV, or not started after AV_START_MS: with Settings › Source ranking › The
     // next source on (the default), the next best one this playback hasn't tried (the title's
     // page picks it: ctx.nextSource), at the same place, NEXT_TRIES more at most. Not for live
-    // channels (but a merged IPTV channel's other copies: ctx.liveFallbacks), YouTube or a USB file.
+    // channels (but an IPTV channel's other copies: ctx.liveFallbacks), YouTube or a USB file.
+    // playing: one that plays but without its sound or picture (checkLiveAV) gives way too.
     var NEXT_TRIES = 3, AV_START_MS = 45000, _openedAt = 0;
-    function nextSourceOnFail(notice) {
+    function nextSourceOnFail(notice, playing) {
         var c = S.ctx;
-        if (!c || !S.active || S.playing || (S.isLive && !c.liveFallbacks) || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
+        if (!c || !S.active || (S.playing && !playing) || (S.isLive && !c.liveFallbacks) || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
         if (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail) { return false; }
         var tried = (c._tried || []).concat([Stremio.sourceId(c.stream)]);
         if (tried.length > NEXT_TRIES) { return false; }
@@ -1801,9 +1827,61 @@ var PlayerParts = {};
             return;
         }
         _stall.bufSince = 0;
-        if (isPaused() || S.cur !== _stall.t) { _stall.t = S.cur; _stall.since = now; return; }
+        if (isPaused() || S.cur !== _stall.t) { _stall.t = S.cur; _stall.since = now; checkLiveAV(now); return; }
         if (_stall.since && now - _stall.since > STALL_SECS * 1000) { recoverStall(U.t('Playback stalled')); }
     }
+
+    // ---------- a live channel without its sound or picture ----------
+    // Playing (time moving), LIVE_AV_GRACE_MS after it settled, a live channel's link the TV plays
+    // with a picture but no sound: its first audio track (where another was picked), then the
+    // channel's next copy (nextSourceOnFail), then its sound repacked by StremioK's service, each
+    // once. Sound but no picture, where the stream lists a video track (not a radio-like channel):
+    // the next copy. ctx._av: what was tried, for this link (ctx.url) only.
+    var LIVE_AV_GRACE_MS = 5000;
+    function streamTracksSummary() {
+        var out = { hasVideo: false, hasAudio: false, listsVideo: false };
+        try {
+            (avplay.getCurrentStreamInfo() || []).forEach(function (x) {
+                var t = ('' + x.type).toUpperCase(), e = {};
+                try { e = typeof x.extra_info === 'string' ? JSON.parse(x.extra_info) : (x.extra_info || {}); } catch (er) {}
+                if (t === 'VIDEO' && (+(e.Width || e.width) > 0 || !!(e.fourCC || e.codec))) { out.hasVideo = true; }
+                if (t === 'AUDIO') { out.hasAudio = true; }
+            });
+        } catch (er2) {}
+        try { out.listsVideo = (avplay.getTotalTrackInfo() || []).some(function (x) { return ('' + x.type).toUpperCase() === 'VIDEO'; }); } catch (er3) {}
+        return out;
+    }
+    function checkLiveAV(now) {
+        var ctx = S.ctx;
+        if (!S.active || !S.playStarted || !S.playing || !ctx || !S.isLive || !useAV || ctx.trailer || ctx.yt || ctx.type === 'radio' || isPaused() || S.buffering) { return; }
+        now = now || Date.now();
+        if (now - Math.max(_openedAt || 0, S.settleFrom || 0) < LIVE_AV_GRACE_MS) { return; }
+        if (!ctx._av || ctx._av.url !== ctx.url) { ctx._av = { url: ctx.url }; }
+        var av = ctx._av, sum = streamTracksSummary();
+        if (sum.hasVideo && !sum.hasAudio) {
+            if (!av.firstAudio) {
+                av.firstAudio = true;
+                if (P.fallbackDefaultAudio && P.fallbackDefaultAudio()) { S.settleFrom = now; return; }
+            }
+            if (av.noAudio) { return; }
+            av.noAudio = true;
+            U.log('player', 'Live channel with a picture but no sound (' + where(ctx.url) + ')');
+            if (nextSourceOnFail({ text: U.t('No sound on this copy') }, true)) { return; }
+            if (!ctx._liveFixed && !ctx._relay && liveFixable(ctx)) {
+                ctx._liveFixed = true;
+                var known = liveKnown(ctx.url);
+                YTPlay.liveOpen(ctx.url, ctx._headers, true, { fix: true, raw: !!(known && known.raw) }).then(function (r) {
+                    if (S.ctx === ctx && S.active && relayed(ctx, r, null, true)) { reopen(U.t('No sound: repacking it through StremioK’s service…')); }
+                }, function () {});
+            }
+        } else if (!sum.hasVideo && sum.hasAudio && sum.listsVideo && !av.noVideo) {
+            av.noVideo = true;
+            U.log('player', 'Live channel with sound but no picture (' + where(ctx.url) + ')');
+            nextSourceOnFail({ text: U.t('No picture on this copy') }, true);
+        }
+    }
+    P.checkLiveAV = checkLiveAV;
+    P.streamTracksSummary = streamTracksSummary;
     function recoverStall(why) {
         if (liveReconnects()) { liveDropped(why); return; }
         var now = Date.now();

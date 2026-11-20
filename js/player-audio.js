@@ -364,8 +364,16 @@
         if (stuck) { return { title: U.t('Audio track'), items: items, idx: idx, wide: true, node: U.el('div', 'sm-detail', cantSwitchText()) }; }
         return { title: U.t('Audio track'), items: items, idx: idx };
     }
+    // A live channel with no sound on the track picked (the player's checkLiveAV): its first
+    // track again, where another was picked. false: nothing to go back to.
+    function fallbackDefaultAudio() {
+        var tracks = getAudioTracks();
+        if (tracks.length < 2 || _audioIdx === null || _audioIdx === tracks[0].index) { return false; }
+        selectAudio(tracks[0].index, U.t('No sound: back to the first audio track…'), true);
+        return true;
+    }
 
     // ----- for the other parts (and js/player.js) -----
     P.resetAudio = resetAudio; P.audioOnStart = audioOnStart; P.audioOnTick = audioOnTick; P.audioOnReady = audioOnReady;
-    P.getAudioTracks = getAudioTracks; P.applyPreferredAudio = applyPreferredAudio; P.audioMenu = audioMenu;
+    P.getAudioTracks = getAudioTracks; P.applyPreferredAudio = applyPreferredAudio; P.audioMenu = audioMenu; P.fallbackDefaultAudio = fallbackDefaultAudio;
 })(PlayerParts);

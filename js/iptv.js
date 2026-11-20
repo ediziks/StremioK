@@ -693,7 +693,45 @@ var IPTV = (function () {
         var any = favs().some(function (id) { return !!d.byId[id]; });
         if (any && at === -1) { d.catalogs.unshift({ type: 'tv', id: FAV_CAT, name: U.t('★ Favorites'), extra: [{ name: 'search' }], _favs: true, _first: true }); }
         if (!any && at !== -1) { d.catalogs.splice(at, 1); }
+        recentCatalog(d);
     }
+    // ---- ⟲ Recent: the channels you played last (noteRecent, from a channel's page as it plays),
+    // newest first, RECENT_MAX at most; a row after Favorites while one of them is among the
+    // channels read. ----
+    var RECENT_KEY = 'stremiok.iptv.recent', RECENT_MAX = 25, RECENT_CAT = 'iptv_recent';
+    function recents() { var r = U.store.get(RECENT_KEY, []) || []; return Array.isArray(r) ? r.filter(function (x) { return typeof x === 'string'; }) : []; }
+    function noteRecent(id) {
+        if (typeof id !== 'string' || !/^iptv:/.test(id)) { return; }
+        var drop = copyIds(id);
+        U.store.set(RECENT_KEY, [id].concat(recents().filter(function (x) { return drop.indexOf(x) === -1 && x !== id; })).slice(0, RECENT_MAX));
+        if (_cache) { recentCatalog(_cache); }
+    }
+    function recentCatalog(d) {
+        var at = -1, fav = -1;
+        for (var i = 0; i < d.catalogs.length; i++) { if (d.catalogs[i].id === RECENT_CAT) { at = i; } if (d.catalogs[i].id === FAV_CAT) { fav = i; } }
+        var any = recents().some(function (id) { return !!d.byId[id]; });
+        if (any && at === -1) { d.catalogs.splice(fav + 1, 0, { type: 'tv', id: RECENT_CAT, name: U.t('⟲ Recent'), extra: [{ name: 'search' }], _recent: true }); }
+        if (!any && at !== -1) { d.catalogs.splice(at, 1); }
+    }
+
+    // ---- What a channel's link really played as (the player's report, a few seconds in) ----
+    // { url: { h, f, hevc, at } }, MEASURED_MAX links at most (the oldest go). A merged channel's
+    // copies are ranked by it once known, ahead of what their names say (see streams).
+    var MEASURED_KEY = 'stremiok.iptv.measured', MEASURED_MAX = 1500, MEASURED_DAY = 86400000;
+    function measured(url) { var all = U.store.get(MEASURED_KEY, null); return (all && url && all[url]) || null; }
+    function noteMeasured(url, a) {
+        if (!url || !a || !(+a.height > 0)) { return; }
+        var rec = { h: +a.height, f: Math.round(+a.fps || 0), hevc: /hev|hvc|h\.?265/i.test(a.codec || '') ? 1 : 0, at: Date.now() };
+        var all = U.store.get(MEASURED_KEY, {}) || {}, prev = all[url];
+        if (prev && prev.h === rec.h && prev.f === rec.f && prev.hevc === rec.hevc && rec.at - prev.at < MEASURED_DAY) { return; }
+        all[url] = rec;
+        var urls = Object.keys(all);
+        if (urls.length > MEASURED_MAX) { urls.sort(function (x, y) { return all[x].at - all[y].at; }).slice(0, urls.length - MEASURED_MAX).forEach(function (u) { delete all[u]; }); }
+        U.store.set(MEASURED_KEY, all);
+    }
+    // On the same scale as quality(): what a name says
+    function measuredScore(m) { return (m.h >= 2000 ? 400 : m.h >= 1000 ? 300 : m.h >= 700 ? 200 : m.h >= 400 ? 100 : 50) + (m.f >= 48 ? 30 : 0) + (m.hevc ? 25 : 0); }
+    function measuredLabel(m) { return (m.h >= 2000 ? '4K' : m.h + 'p') + (m.f >= 48 ? (m.h >= 2000 ? ' ' : '') + m.f : ''); }   // ("1080p50", "720p", "4K")
     function build(channels) {
         var groups = [], byGroup = {}, byId = {};
         channels.forEach(function (c) {
@@ -1063,7 +1101,8 @@ var IPTV = (function () {
             if (!cat) { return []; }
             var q = (extra && extra.search) ? ('' + extra.search).toLowerCase() : '';
             var out = [];
-            var list = cat._favs ? favs().map(function (id) { return d.byId[id]; }).filter(function (c, i, all) { return !!c && all.indexOf(c) === i; }) : (d.byGroup[cat.type + '|' + cat._group] || []);   // (a merged channel once)
+            var ids = cat._favs ? favs() : cat._recent ? recents() : null;
+            var list = ids ? ids.map(function (id) { return d.byId[id]; }).filter(function (c, i, all) { return !!c && all.indexOf(c) === i; }) : (d.byGroup[cat.type + '|' + cat._group] || []);   // (a merged channel once)
             list.forEach(function (c) {
                 if (q && c.name.toLowerCase().indexOf(q) === -1) { return; }
                 out.push(toMeta(c));
@@ -1131,10 +1170,20 @@ var IPTV = (function () {
             if (c._copies) {   // (merged: each copy's, the best first, its quality said)
                 return Promise.all(c._copies.map(function (x) {
                     return copyStreams(x.c).then(function (l) {
-                        return l.map(function (st) { if (x.badge) { st.title = (st.title || '') + ' · ' + x.badge; } return st; });
+                        return l.map(function (st) {
+                            var m = measured(st.url), badge = m ? measuredLabel(m) + (/\b(?:backup|yedek)\b/i.test(x.c.name || '') ? ' ' + U.t('backup') : '') : x.badge;
+                            if (badge) { st.title = (st.title || '') + ' · ' + badge; }
+                            return st;
+                        });
                     }, function () { return []; });
                 })).then(function (lists) {
-                    var all = [].concat.apply([], lists);
+                    // (what each copy really played as, where known, ahead of what its name says)
+                    var ranked = lists.map(function (l, i) {
+                        var x = c._copies[i], m = l.length ? measured(l[0].url) : null;
+                        var backup = /\b(?:backup|yedek)\b/i.test(x.c.name || '') ? 150 : 0;
+                        return { l: l, i: i, score: m ? measuredScore(m) - backup : quality(x.c.name).score };
+                    }).sort(function (a, b) { return b.score - a.score || a.i - b.i; });
+                    var all = [].concat.apply([], ranked.map(function (r) { return r.l; }));
                     if (!c._best || all.length < 2) { return all; }
                     all[0]._fallbacks = all.slice(1);   // (the best alone, played at once; the rest if it doesn't start: see the player's nextSourceOnFail)
                     return [all[0]];
@@ -1210,7 +1259,7 @@ var IPTV = (function () {
         canGroup: canGroup, playlistGroups: playlistGroups, setPlaylistGroups: setStalkerGroups, liveOnly: liveOnly, setLiveOnly: setLiveOnly,
         xtreamParts: xtreamParts, xtreamUrl: xtreamUrl, xtreamCheck: xtreamCheck, addXtream: addXtream, xtreamFormat: xtreamFormat, setXtreamFormat: setXtreamFormat,
         catchupStream: catchupStream, catchupDays: catchupDays, hasCatchup: hasCatchup, catchupTz: catchupTz, setCatchupTz: setCatchupTz,
-        isFavorite: isFavorite, setFavorite: setFavorite, tidyCfg: tidyCfg, setTidy: setTidy, HIDE_SUGGESTED: HIDE_SUGGESTED, countryOf: countryOf, plainName: plainName, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
+        isFavorite: isFavorite, setFavorite: setFavorite, noteRecent: noteRecent, noteMeasured: noteMeasured, tidyCfg: tidyCfg, setTidy: setTidy, HIDE_SUGGESTED: HIDE_SUGGESTED, countryOf: countryOf, plainName: plainName, refreshEvery: refreshEvery, setRefreshEvery: setRefreshEvery, readAt: readAt,
         sizeMb: sizeMb, setSizeMb: setSizeMb, maxChannels: maxChannels, SIZES: SIZES,
         channels: function () { return _cache ? _cache.channels : []; }, channel: function (id) { return _cache ? _cache.byId[id] || null : null; }, isEnabled: isEnabled, reset: reset, status: status,
         load: load, reload: reload, catalog: catalog, meta: meta, zapGroups: zapGroups, streams: streams, synthAddon: synthAddon, isReady: isReady,

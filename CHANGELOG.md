@@ -3,6 +3,17 @@
 What changed in each version of StremioK, newest first. How everything works is in the
 [user guide](docs/USER-GUIDE.md).
 
+## Unreleased (ediziks' fork, on 2.4.5)
+- **A live channel without sound or picture** gets its first audio track back, then the
+  channel's next copy, then (no sound) its sound repacked by StremioK's service, once each.
+- **Copies ranked by what they really played as:** a merged channel's copies are ordered by the
+  resolution and frame rate the TV measured (*1080p50*, *720p*), ahead of what their names say.
+  The player's tags show the frame rate.
+- **⟲ Recent** on the IPTV tab: the last 25 channels you played, after Favorites.
+- **Fixed:** an Xtream channel's next copy opened the first copy again (its link was kept);
+  in a desktop browser, a source that didn't start closed the player instead of trying the next.
+- Development: `tests/run.js` (ES5 scan, TV guide, the above), `tools/` (desktop runner, TV loop).
+
 ## 2.4.5 — 2026-11-20
 Much of this release comes from ediziks' IPTV work (#29), ported and made configurable. Thank you!
 - **Big playlists:** StremioK's service reads an M3U up to 250 MB, or an Xtream account's live

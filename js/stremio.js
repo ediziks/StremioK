@@ -2350,6 +2350,7 @@ var Stremio = (function () {
         var codec = ('' + (actual.codec || '')).toLowerCase(), out = [];
         codec = /hevc|h265|hvc|hev/.test(codec) ? 'hevc' : /av01|av1/.test(codec) ? 'av1' : /avc|h264/.test(codec) ? 'h264' : info.codec;
         if (res) { out.push(PROFILE_RES[res] || res + 'p'); }
+        if (+actual.fps > 0) { out.push(Math.round(+actual.fps) + ' fps'); }   // (what the TV's player says it plays at)
         if (codec) { out.push(PROFILE_CODEC[codec] || codec.toUpperCase()); }
         if (info.bits10 || info.hdr) { out.push('10-bit'); }
         if (info.hdr) { out.push({ hdr: 'HDR10', hdr10p: 'HDR10+', dv: 'Dolby Vision', 'dv-only': 'Dolby Vision' }[info.hdr]); }
