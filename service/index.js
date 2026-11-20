@@ -6313,7 +6313,7 @@ function epgFetch(url, onText, cb, lim) {
 // M3U_FRESH_MS unless asked again (Reload); kept when a new read fails (said: stale); one not
 // used for M3U_KEEP_MS is deleted.
 var M3U_MAX = 250 * 1048576, M3U_MS = 12 * 60000, M3U_FRESH_MS = 86400000, M3U_RETRY_MS = 60000, M3U_KEEP_MS = 14 * 86400000, M3U_GROUPS = 5000, M3U_KEYS = 3000;
-var M3U_FILES = /^m3u-[0-9a-z]+\.(m3u|json)(\.part)?$/, _m3u = Object.create(null), _m3uSwept = false;
+var M3U_FILES = /^m3u-[0-9a-z]+\.(m3u|json)(\.\d+)?(\.part)?$/, _m3u = Object.create(null), _m3uSwept = false, _m3uPart = 0;
 function m3uHash(s) {
     var h = 0x811c9dc5, t = '' + s;
     for (var i = 0; i < t.length; i++) {
@@ -6364,27 +6364,31 @@ function m3uState(src, force) {
         } catch (e) {}
     }
     var again = Date.now() - (x.failedAt || 0) > M3U_RETRY_MS, due = x.state === 'new' || (x.state === 'ready' && Date.now() - x.at > M3U_FRESH_MS && again) || (x.state === 'failed' && again);   // (a read that failed: tried again a minute later, or when asked again)
-    if (x.state !== 'loading' && (force || due)) { m3uFetch(x, src); }
+    if (x.state !== 'loading' && !x.refreshing && (force || due)) { m3uFetch(x, src); }
     return x;
 }
 function m3uFetch(x, src) {
     var fs = require('fs'), f = m3uFile(x.key, 'm3u'), out, failed = false, groups = {}, ng = 0, total = 0, header = '';
     if (!f) { x.state = 'failed'; x.error = 'no folder to keep it in'; return; }
-    var had = x.state === 'ready';
-    x.state = 'loading'; x.read = 0; x.error = ''; x.refused = false;
-    try { out = fs.createWriteStream(f + '.part', { mode: 384 }); } catch (e) { x.state = had ? 'ready' : 'failed'; x.error = 'couldn\'t keep it'; return; }
+    // A copy read before keeps answering while it's read again (x.refreshing), until the new one
+    // is swapped in; each read writes its own .part (one cleared meanwhile can't remove the next's).
+    var had = x.state === 'ready', part = f + '.' + (++_m3uPart) + '.part';
+    if (had) { x.refreshing = true; } else { x.state = 'loading'; x.read = 0; }
+    x.error = ''; x.refused = false;
+    try { out = fs.createWriteStream(part, { mode: 384 }); } catch (e) { x.refreshing = false; x.state = had ? 'ready' : 'failed'; x.error = 'couldn\'t keep it'; x.failedAt = Date.now(); return; }
     out.on('error', function () { failed = true; });
     function put(key, name, text) {   // (a channel, under its group)
         if (!groups[key]) { if (ng >= M3U_GROUPS) { key = '_more'; name = '…'; } if (!groups[key]) { groups[key] = { name: name, n: 0 }; ng++; } }
         groups[key].n++; total++;
-        x.read += text.length;
+        if (!had) { x.read += text.length; }
         out.write('#G:' + key + '\n' + text);
     }
     function end(err, partial) {
         out.end(function () {
-            if (_m3u[x.key] !== x) { fs.unlink(f + '.part', noop); return; }   // (cleared meanwhile: Clear saved copies)
+            x.refreshing = false;
+            if (_m3u[x.key] !== x) { fs.unlink(part, noop); return; }   // (cleared meanwhile: Clear saved copies)
             if (err || failed || !total) {
-                fs.unlink(f + '.part', noop);
+                fs.unlink(part, noop);
                 x.error = err ? (err.message || 'failed') : failed ? 'couldn\'t keep it' : (src.kind === 'xt' ? 'no live channels' : 'no channels in it (is it an M3U playlist?)');
                 if (err && err.status === 401) { x.refused = true; }
                 x.failedAt = Date.now();
@@ -6392,8 +6396,8 @@ function m3uFetch(x, src) {
                 log('IPTV playlist (' + m3uHost(src.kind === 'xt' ? src.base : src.u) + ') not read: ' + x.error);
                 return;
             }
-            fs.rename(f + '.part', f, function (e) {
-                if (e) { x.state = had ? 'ready' : 'failed'; x.stale = had; x.error = 'couldn\'t keep it'; return; }
+            fs.rename(part, f, function (e) {
+                if (e) { fs.unlink(part, noop); x.state = had ? 'ready' : 'failed'; x.stale = had; x.error = 'couldn\'t keep it'; x.failedAt = Date.now(); return; }
                 x.state = 'ready'; x.at = Date.now(); x.total = total; x.groups = groups; x.header = header; x.partial = !!partial; x.stale = false; x.refused = false;
                 try { fs.writeFileSync(m3uFile(x.key, 'json'), JSON.stringify({ key: x.key, at: x.at, total: total, groups: groups, header: header, partial: x.partial }), { mode: 384 }); } catch (e2) {}
             });
@@ -6646,11 +6650,15 @@ function epgPump() {
                 g.failedAt = Date.now();
                 if (!g.keys) { g.at = g.failedAt; }
                 log('TV guide not read: ' + g.error);
+            } else if (_epg[g.url] === g && firstErr && g.keys) {   // (its own guide failed, an earlier read of it here: that one stays, not the extra guides alone)
+                g.state = 'ready'; g.error = firstErr.message || 'failed'; g.failedAt = Date.now();
+                log('TV guide not read again (' + g.error + '): the one read before stays');
             } else if (_epg[g.url] === g) {   // (still wanted: not cleared, nor dropped, meanwhile)
                 g.keys = p.keys; g.progs = p.progs; g.icons = p.icons; g.channels = kept; g.programmes = p.count;
                 g.partial = !!(partial || p.partial); g.error = ''; g.state = 'ready'; g.at = Date.now();
                 log('TV guide read: ' + kept + ' channels, ' + p.count + ' programs; ' + notes.join('; ') + (firstErr ? '; its own guide failed: ' + (firstErr.message || 'failed') : '') + (partial ? '; cut: ' + partial : p.partial ? '; cut: over ' + EPG_TOTAL + ' programs' : '') + (p.per < EPG_PER ? '; ' + p.per + ' programs a channel' : ''));
-                var f = epgFile(g.url);
+                if (firstErr) { g.partial = true; g.at = Date.now() - EPG_FRESH_MS + EPG_RETRY_MS; }   // (the extra guides alone: its own asked again in EPG_RETRY_MS, and not saved over a whole one)
+                var f = firstErr ? null : epgFile(g.url);
                 if (f) {
                     var keep = { v: EPG_FORMAT, url: g.url, k: g.k, at: g.at, keys: g.keys, progs: g.progs, icons: g.icons, channels: g.channels, programmes: g.programmes, partial: g.partial };
                     require('fs').writeFile(f + '.part', JSON.stringify(keep), { mode: 384 }, function (e) {   // (written whole, then swapped in)

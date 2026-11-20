@@ -155,7 +155,7 @@
     // play (even if the quality list hasn't loaded yet), a pick with no lower rung left,
     // and a plain stream whose first open failed.
     function tryAutoFallback() {
-        if (_autoRetried || !S.ctx) { return false; }
+        if (_autoRetried || !S.ctx || (S.isLive && S.ctx.liveFallbacks && !S.ctx.yt)) { return false; }   // (a live channel with other copies: the next copy instead)
         var wasAuto = (_qualityBw == null && !S.ctx.initialQualityHeight);   // a plain stream already in Auto
         _autoRetried = true;
         _qualityBw = null;

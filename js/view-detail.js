@@ -2325,6 +2325,7 @@
             ch.idx = idx;
             page.id = m.id; page.type = type; page.meta = m; page.preview = m;
             page.streamId = m.id; page.streamLabel = name; page.streams = list;
+            page.fallbacks = playable[0]._fallbacks && playable[0]._fallbacks.length ? [playable[0]].concat(playable[0]._fallbacks) : null;   // (this channel's own copies, not the one before's)
             startPlayback(playable[0], m.id, name);
         }, function () {
             if (gen !== _tuneGen) { return; }

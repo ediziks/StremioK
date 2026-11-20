@@ -444,6 +444,7 @@ var PlayerParts = {};
     function replaceSource(s, keep) {
         if (!S.active || !S.ctx || !s || !s.url) { return; }
         var old = S.ctx, ctx = {};
+        if (S.behind) { _stayBehind = Date.now() + 20000; }   // (live TV behind the menus: the next copy stays behind them)
         Object.keys(old).forEach(function (k) { if (SOURCE_FIELDS.indexOf(k) === -1) { ctx[k] = old[k]; } });
         ctx.url = s.url; ctx.variantUrl = s.variantUrl; ctx.initialQualityHeight = s.initialQualityHeight;
         ctx.yt = s.yt || undefined;
@@ -523,7 +524,7 @@ var PlayerParts = {};
     function play(ctx, onExit) {
         // Replacing a YouTube stream that's playing (CH+/CH− to the next channel): the TV's
         // player can freeze on an open straight after closing it, so settle first (startAV).
-        var settle = !!(S.active && S.ctx && S.ctx.yt);
+        var settle = (S.active && S.ctx && S.ctx.yt) ? true : (S.active && S.isLive && S.ctx && !S.ctx.trailer) ? LIVE_SETTLE_MS : 0;   // (a live channel replaced, CH+/CH−: stopped, then a short wait, or this TV can freeze the picture)
         // (CH+ / CH− from behind the menus: the next channel stays behind them; anything else full screen)
         var stayBehind = !!(S.active && S.behind && _stayBehind > Date.now());
         _stayBehind = 0;
@@ -714,7 +715,7 @@ var PlayerParts = {};
     // Decides live vs VOD from the reported duration (0 / non-finite = live).
     function markLiveFromDuration() {
         if (S.ctx && !(S.ctx.stream && S.ctx.stream._vod) && !S.ctx._vodManifest && (S.ctx.type === 'tv' || S.ctx.type === 'radio' || /^iptv:/.test(S.ctx.id || ''))) { S.isLive = true; }
-        if (!S.dur || S.dur <= 0 || !isFinite(S.dur)) { S.isLive = true; }
+        if ((!S.dur || S.dur <= 0 || !isFinite(S.dur)) && !(S.ctx && S.ctx.stream && S.ctx.stream._vod)) { S.isLive = true; }   // (a catch-up recording is never live)
         else if (S.ctx && S.ctx._vodManifest) { S.isLive = false; }   // (its manifest said it's a film before it was ready: see vodCheck)
     }
 
@@ -757,7 +758,7 @@ var PlayerParts = {};
     // settle: a re-open of what's playing (a quality switch, or its retry). This TV's player
     // tends to fail the first open straight after closing a playing stream (YouTube
     // especially), so stop it properly and give it a moment before opening again.
-    var SETTLE_MS = 300;
+    var SETTLE_MS = 300, LIVE_SETTLE_MS = 120;
     // A file on a USB drive over 2 GB: through StremioK's service (LocalMedia.openUrl), the
     // only way the 2017 TV's player jumps in one.
     function opened(url) {
@@ -771,12 +772,12 @@ var PlayerParts = {};
         _lastTickMs = null; _playedMs = 0;
         _tick = null; _pausedOnce = false;   // (a new open: the jump watch starts over, see checkJump)
         subsBeforeOpen();   // a built-in subtitle track is selected again once this attempt plays
-        if (settle) { try { avplay.stop(); } catch (e0) {} }
+        try { avplay.stop(); } catch (e0) {}   // (always stopped before it's closed)
         try {
             avplay.close();
         } catch (e) {}
         if (settle) {
-            setTimeout(function () { if (S.active && token === _playToken) { openAV(url, token); } }, SETTLE_MS);
+            setTimeout(function () { if (S.active && token === _playToken) { openAV(url, token); } }, typeof settle === 'number' ? settle : SETTLE_MS);
             return;
         }
         openAV(url, token);
@@ -1495,7 +1496,7 @@ var PlayerParts = {};
     function nextSourceOnFail(notice, playing) {
         var c = S.ctx;
         if (!c || !S.active || (S.playing && !playing) || (S.isLive && !c.liveFallbacks) || c.trailer || c.yt || c.localFile || !c.stream || typeof c.nextSource !== 'function') { return false; }
-        if (typeof Stremio === 'undefined' || !Stremio.getPrefs || !Stremio.getPrefs().nextOnFail) { return false; }
+        if (typeof Stremio === 'undefined' || !Stremio.getPrefs || (!Stremio.getPrefs().nextOnFail && !(S.isLive && c.liveFallbacks))) { return false; }   // (a live channel's own copies: always)
         var tried = (c._tried || []).concat([Stremio.sourceId(c.stream)]);
         if (tried.length > NEXT_TRIES) { return false; }
         var n = null;
@@ -1586,8 +1587,11 @@ var PlayerParts = {};
     // next source when there's one; else it stops and says so (not while you've paused it). A
     // torrent through a streaming server has longer (Settings › Content › Streaming server: finding
     // people sharing it takes a while).
+    // A live channel with other copies gives way sooner (LIVE_START_MS).
+    var LIVE_START_MS = 15000;
     function startMs() {
         var st = S.ctx && S.ctx.stream;
+        if (S.isLive && !_reco.tries && S.ctx && S.ctx.liveFallbacks) { return LIVE_START_MS; }
         return (st && st._torrent && typeof Stremio !== 'undefined' && Stremio.server) ? Stremio.server().wait * 1000 : AV_START_MS;
     }
     function startCheck() {
@@ -1767,6 +1771,7 @@ var PlayerParts = {};
     function liveCheck() {
         var ctx = S.ctx;
         if (!ctx || ctx._liveChecked || !liveFixable(ctx)) { return; }
+        if (liveFormat(ctx.url) === 'ts') { return; }   // (an Xtream channel's MPEG-TS: the look is a second connection, which a one-connection account drops the picture for; Red › repack still works)
         ctx._liveChecked = true;
         var known = liveKnown(ctx.url);
         if (known && ccOf(known) && known.lv === LIVE_LOOK) { return; }   // (one kept by an older look: looked at again, once)
@@ -1919,6 +1924,7 @@ var PlayerParts = {};
             return;
         }
         _stall.recoveries = _stall.recoveries.filter(function (t) { return now - t < STALL_WINDOW_MS; });
+        if ((_reco.tries >= 2 || _stall.recoveries.length >= STALL_MAX - 1) && S.ctx && S.ctx.liveFallbacks && nextSourceOnFail({ text: why }, true)) { _stall.recoveries = []; return; }   // (the channel's next copy, before more tries of this one)
         if (mode !== 'always' && _stall.recoveries.length >= STALL_MAX) {
             U.log('player', 'Live channel: ' + why + '; dropped ' + STALL_MAX + ' times in ' + (STALL_WINDOW_MS / 60000) + ' minutes, given up');
             U.spinner(false); U.toast(U.t('This channel keeps dropping — try it again later'), 5000);

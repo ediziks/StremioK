@@ -212,6 +212,7 @@
     // ignores re-picking the same track; stepping through a different track first makes
     // it switch for real (the manual workaround, in one press).
     function selectAudio(index, message, force) {
+        S.settleFrom = Date.now();   // (the sound settles first: see the player's checkLiveAV)
         if (P.useAV) {
             var why = busyWhy();
             if (why) { hold(index, message, force, why); return; }

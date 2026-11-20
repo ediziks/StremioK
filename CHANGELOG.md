@@ -10,6 +10,21 @@ What changed in each version of StremioK, newest first. How everything works is 
   resolution and frame rate the TV measured (*1080p50*, *720p*), ahead of what their names say.
   The player's tags show the frame rate.
 - **⟲ Recent** on the IPTV tab: the last 25 channels you played, after Favorites.
+- **Merging, tidier:** a "+1" channel, a regional or other-language feed ("( US )", "(SP)") and
+  "CANAL+ 360" stay apart from the main channel; "[BK]", mirror and spare copies rank last; a
+  merged channel shows in its plain group, not a 4K/VIP one; the suggested hide list adds "+18"
+  and "sex" and no longer hides Adult Swim.
+- **Favorites and Recent** are found again when the copy they were saved by is gone (Channel
+  groups changed, or the provider renumbered); the Guide's favorites check is done once.
+- **Live channels:** CH+/CH− falls back to the new channel's own copies (it used the previous
+  one's); an Xtream MPEG-TS link falls back to its HLS link; a dead copy gives way after 15 s,
+  without retrying the same link, and a copy that keeps dropping to the next; the TV's player is
+  stopped before it's closed on a zap; no second connection to the provider for a look at an
+  Xtream MPEG-TS channel or a YouTube check while one plays; a copy switch behind the menus
+  stays behind; a catch-up recording is never treated as live.
+- **Service:** a provider guide that fails no longer replaces the one read before with only the
+  extra guides; a playlist being read again keeps serving the saved copy; an Xtream account the
+  service answered for isn't read whole by the TV (without your groups) when that read fails.
 - **Fixed: copies from other countries merged** in groups named "EU | UK …": the region was
   taken as the country, so FR|, ES| and TR| copies joined the UK channel, and *Countries first*
   saw every such group as "EU". The region is skipped, and a copy's own prefix comes first.

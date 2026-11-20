@@ -559,6 +559,46 @@ async function run() {
         assert.ok(written.every((p) => /\.stremiok-write-test$/.test(p)), 'only the probe file is written');
     });
 
+    await runTest('Service: a failed provider guide keeps the one read before; a refresh keeps serving the old playlist', async () => {
+        const svc = loadService(); const EPG = loadBrowserScript('js/epg.js').EPG;
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stremiok-test-'));
+        svc.saveDir = () => tmp;
+        const prog = (ch, t) => '<programme start="' + ts(1800000000 - 600) + '" stop="' + ts(1800000000 + 1200) + '" channel="' + ch + '"><title>' + t + '</title></programme>';
+        const own = '<tv><channel id="a.uk"><display-name>A</display-name></channel><channel id="b.uk"><display-name>B</display-name></channel>' + prog('a.uk', 'A1') + prog('b.uk', 'B1') + '</tv>';
+        const extra = '<tv><channel id="c.tr"><display-name>C</display-name></channel>' + prog('c.tr', 'C1') + '</tv>';
+        let ownFails = false;
+        const size = { got: 1, unpacked: 1, ms: 1 };
+        svc.epgFetch = (u, feed, cb) => { if (/^http:\/\/p\.example/.test(u)) { if (ownFails) { cb(new Error('HTTP 503'), '', size); return; } feed(own); } else { feed(extra); } cb(null, '', size); };
+        const url = 'http://p.example/xmltv.php#extra=' + encodeURIComponent('https://x.example/TR1.xml.gz');
+        const k = EPG.bitsFor(['i:a.uk', 'i:b.uk', 'i:c.tr']);
+        let g = svc.epgStart(url, k, true);
+        assert.strictEqual(g.state, 'ready'); assert.strictEqual(g.channels, 3, 'own guide and the extra one');
+        ownFails = true;
+        g = svc.epgStart(url, k, true);
+        assert.strictEqual(g.state, 'ready'); assert.strictEqual(g.channels, 3, 'the earlier read stays, not the extra guide alone');
+        assert.ok(/503/.test(g.error) && g.failedAt > 0, 'its failure said, tried again later');
+        const fresh = loadService(); fresh.saveDir = () => null; fresh.epgFetch = svc.epgFetch;
+        g = fresh.epgStart(url, k, true);
+        assert.ok(g.state === 'ready' && g.channels === 1 && g.partial, 'nothing before: the extra guide alone, marked partial');
+        assert.ok(Date.now() - g.at > fresh.EPG_FRESH_MS - fresh.EPG_RETRY_MS - 1000, 'and asked again soon, not kept as fresh for 6 hours');
+
+        // The playlist: a refresh keeps the copy read before answering
+        let pending = null, list = '#EXTM3U\n#EXTINF:-1 group-title="G",One\nhttp://a/1\n';
+        svc.epgFetch = (u, feed, cb) => { pending = () => { feed(list); cb(null, ''); }; };
+        const src = svc.m3uSrc({ u: 'http://pl.example/list.m3u' });
+        let x = svc.m3uState(src, true); pending();
+        await new Promise((r) => setTimeout(r, 100));
+        assert.strictEqual(x.state, 'ready'); assert.strictEqual(x.total, 1);
+        list = '#EXTM3U\n#EXTINF:-1 group-title="G",One\nhttp://a/1\n#EXTINF:-1 group-title="G",Two\nhttp://a/2\n';
+        x = svc.m3uState(src, true);
+        assert.ok(x.state === 'ready' && x.refreshing, 'still ready while read again');
+        pending();
+        await new Promise((r) => setTimeout(r, 100));
+        assert.ok(x.state === 'ready' && !x.refreshing && x.total === 2, 'the new copy swapped in: ' + JSON.stringify({ s: x.state, r: x.refreshing, t: x.total }));
+        assert.ok(!fs.readdirSync(tmp).some((n) => /\.part$/.test(n)), 'no .part left');
+        fs.rmSync(tmp, { recursive: true, force: true });
+    });
+
     // A playlist read by the TV itself (no service): two copies of a channel, merged
     function iptvWith(m3u, tidy) {
         const ctx = loadBrowserScript('js/iptv.js', {});
@@ -610,6 +650,49 @@ async function run() {
         assert.deepStrictEqual(Array.from(d.groups.map((g) => g.name)), ['EU | TURK ULUSAL', 'EU | UK DOCUMENTARY', 'EU | FR DOCUMENTAIRE'], 'Countries first sees through "EU |"');
     });
 
+    await runTest('Merge keeps +1, regional and other-language feeds apart; backups last; tile in a plain group', async () => {
+        const L = [['EU | UK 4K', 'UK| SKY SPORTS MAIN EVENT'], ['EU | UK SPORTS', 'UK| SKY SPORTS MAIN EVENT HD'],
+            ['EU | UK GENERAL', 'UK| ITV 1 FHD'], ['EU | UK GENERAL', 'UK| ITV+ 1 HD'], ['EU | UK GENERAL', 'UK| ITV 1 [BK]'],
+            ['EU | FRANCE', 'FR| CANAL+ FHD'], ['EU | FRANCE', 'FR| CANAL+ 360 FHD'],
+            ['EU | UK DOCUMENTARY', 'UK| DISCOVERY CHANNEL FHD'], ['EU | UK DOCUMENTARY', 'UK| DISCOVERY CHANNEL HD ( US )'],
+            ['AM | USA SPORTS', 'US| BEIN SPORTS LALIGA HD'], ['AM | USA SPORTS', 'US| (SP) BEIN SPORTS LALIGA'],
+            ['EU | UK KIDS', 'UK| ADULT SWIM'], ['XXX', '+18 HOT TV'], ['EU | UK GENERAL', 'UK| SEX TV']];
+        const m3u = '#EXTM3U\n' + L.map((x, i) => '#EXTINF:-1 group-title="' + x[0] + '",' + x[1] + '\nhttp://a.example/' + i + '.m3u8').join('\n') + '\n';
+        const ctx = iptvWith(m3u, { merge: 'best', hide: ['xxx', 'adult', '+18', 'sex'] });
+        const d = await ctx.IPTV.load();
+        const names = d.channels.map((c) => c.name + (c._copies ? '[' + c._copies.length + ']' : ''));
+        const has = (re) => d.channels.filter((c) => re.test(c.name));
+        assert.strictEqual(has(/ITV/).length, 2, '+1 apart: ' + names.join(', '));
+        assert.strictEqual(has(/CANAL/).length, 2, 'CANAL+ 360 is its own channel');
+        assert.strictEqual(has(/DISCOVERY/).length, 2, '( US ) feed apart from UK');
+        assert.strictEqual(has(/LALIGA/).length, 2, '(SP) feed apart');
+        assert.ok(has(/ADULT SWIM/).length === 1 && !has(/HOT TV|SEX TV/).length, 'Adult Swim stays, +18 and sex hidden: ' + names.join(', '));
+        const itv = d.channels.filter((c) => c._copies && /ITV/.test(c.name))[0];
+        assert.ok(/\[BK\]/.test(itv._copies[itv._copies.length - 1].c.name), '[BK] backup ranked last');
+        const sky = d.channels.filter((c) => /SKY SPORTS/.test(c.name))[0];
+        assert.strictEqual(sky.group, 'EU | UK SPORTS', 'the merged tile shows in the plain group, not 4K');
+        assert.strictEqual(sky._copies[0].c.group, 'EU | UK 4K', 'the 4K group\'s copy (its group says 4K) ranks first');
+    });
+
+    await runTest('Favorites and Recent: found again when the saved copy is gone', async () => {
+        const two = '#EXTM3U\n#EXTINF:-1 group-title="EU | UK 4K",UK| SKY ARTS FHD\nhttp://a.example/1.m3u8\n#EXTINF:-1 group-title="EU | UK GENERAL",UK| SKY ARTS HD\nhttp://a.example/2.m3u8\n';
+        const ctx = iptvWith(two, { merge: 'best' });
+        let d = await ctx.IPTV.load();
+        const arts = d.channels.filter((c) => /SKY ARTS/.test(c.name))[0];
+        const fhd = arts._copies.filter((x) => /FHD/.test(x.c.name))[0].c.id;
+        ctx.IPTV.setFavorite(fhd, true); ctx.IPTV.noteRecent(fhd);
+        assert.ok(ctx.IPTV.isFavorite(arts.id));
+        ctx.U.getText = () => Promise.resolve('#EXTM3U\n#EXTINF:-1 group-title="EU | UK GENERAL",UK| SKY ARTS HD\nhttp://a.example/2.m3u8\n');   // (the 4K group left out)
+        d = await ctx.IPTV.reload();   // (read again, not the saved copy)
+        const now = d.channels.filter((c) => /SKY ARTS/.test(c.name))[0];
+        assert.ok(!now._copies && /HD$/.test(now.name), 'the reload has only the HD copy: ' + now.name + (now._copies ? ' [' + now._copies.length + ']' : ''));
+        assert.ok(ctx.IPTV.isFavorite(now.id), 'still a favorite');
+        assert.deepStrictEqual(Array.from((await ctx.IPTV.catalog('iptv_favs')).map((m) => m.id)), [now.id]);
+        assert.deepStrictEqual(Array.from((await ctx.IPTV.catalog('iptv_recent')).map((m) => m.id)), [now.id]);
+        ctx.IPTV.setFavorite(now.id, false);
+        assert.ok(!ctx.IPTV.isFavorite(now.id), 'unfavorited through its new id');
+    });
+
     await runTest('Recent: a row after Favorites, newest first, a merged channel once', async () => {
         const ctx = iptvWith(M3U, { merge: 'all' });
         const d = await ctx.IPTV.load();
@@ -629,6 +712,65 @@ async function run() {
         const t = ctx.Stremio.formatTags({}, { height: 1080, fps: 50, codec: 'hvc1' });
         assert.ok(/1080p/.test(t) && /50 fps/.test(t), t);
         assert.ok(!/fps/.test(ctx.Stremio.formatTags({}, { height: 720 })));
+    });
+
+    function loadPlayer() {
+            const calls = []; let listener = null, streamInfo = [], trackInfo = [], liveOpens = 0;
+            const avplay = {
+                open: (u) => { calls.push('open:' + u); }, stop: () => { calls.push('stop'); }, close: () => { calls.push('close'); }, setListener: (l) => { listener = l; },
+                prepareAsync: (ok) => { ok(); }, play: () => {}, getState: () => 'PLAYING', getDuration: () => 0, getCurrentTime: () => 0,
+                getTotalTrackInfo: () => trackInfo, getCurrentStreamInfo: () => streamInfo, setSelectTrack: (t, i) => { calls.push('select:' + t + ':' + i); },
+                setDisplayRect: () => {}, setDisplayMethod: () => {}, setBufferingParam: () => {}, setStreamingProperty: () => {}, setSilentSubtitle: () => {},
+                seekTo: () => {}, suspend: () => {}, restore: () => {}
+            };
+            const el = (id, tag) => { const cl = new Set(); return { id: id || '', tagName: tag || 'DIV', style: {}, className: '', textContent: '', children: [], parentNode: null,
+                setAttribute: () => {}, getAttribute: () => null, contains: () => false, classList: { add: (c) => cl.add(c), remove: (c) => cl.delete(c), contains: (c) => cl.has(c), toggle: () => {} },
+                appendChild: (c) => c, removeChild: (c) => c, insertBefore: (c) => c, addEventListener: () => {}, removeEventListener: () => {}, querySelector: () => null, querySelectorAll: () => [],
+                getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0 }), focus: () => {}, play: () => Promise.resolve(), pause: () => {} }; };
+            const byId = {}; const body = el('body', 'BODY');
+            const base = loadBrowserScript('js/iptv.js');
+            const U2 = Object.assign({}, base.U, { byId: (id) => byId[id] || (byId[id] = el(id)), el: (t) => el('', (t || 'div').toUpperCase()), clear: (n) => { n.children = []; },
+                getText: () => Promise.resolve(''), getJSON: () => Promise.resolve(null), fmtTime: () => '0:00', whenVisible: () => {}, toast: () => {}, spinner: () => {},
+                cancelToken: () => ({ cancelled: false, cancel() { this.cancelled = true; } }), loadScript: () => Promise.resolve(), deferImage: () => {}, cardImage: () => {}, crumb: () => {}, zoom: () => 1, fromUTF8: (b) => b, toUTF8: (x) => x, qrCanvas: () => {}, listOf: (x) => Array.isArray(x) ? x : [] });
+            const ctx = loadBrowserScript(['js/stremio.js', 'js/player-core.js', 'js/player-store.js', 'js/player-lang.js', 'js/player-quality.js', 'js/player-subs.js',
+                'js/player-audio.js', 'js/player-controls.js', 'js/player.js'], {
+                Date, webapis: { avplay },
+                YTPlay: { installMode: () => 'service', liveOpen: (u, h, a, o) => { if (o && o.fix) { liveOpens++; } return Promise.resolve({ url: 'http://localhost:8098/live/fixed.m3u8' }); } },
+                U: U2, document: { body, documentElement: body, getElementById: (id) => byId[id] || (byId[id] = el(id)), createElement: U2.el, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {} }
+            });
+            ctx.Player.init();
+        const S = {}; Object.defineProperty(S, 'trackInfo', { set: (v) => { trackInfo = v; } }); Object.defineProperty(S, 'streamInfo', { set: (v) => { streamInfo = v; } });
+        return { ctx, calls, set: S, liveOpens: () => liveOpens, listener: () => listener };
+    }
+
+    await runTest('Live zap: stopped before closed, a short wait; catch-up never live; no look at Xtream MPEG-TS', async () => {
+        const { ctx, calls } = loadPlayer();
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms || 150));
+        ctx.Player.play({ url: 'http://xt.example/live/u/p/1.ts', stream: { url: 'http://xt.example/live/u/p/1.ts' }, type: 'tv', id: 'iptv:a', name: 'A' });
+        await wait();
+        ctx.PlayerParts.S.playing = true; calls.length = 0;
+        ctx.Player.play({ url: 'http://xt.example/live/u/p/2.ts', stream: { url: 'http://xt.example/live/u/p/2.ts' }, type: 'tv', id: 'iptv:b', name: 'B' });
+        assert.deepStrictEqual(calls.slice(0, 2), ['stop', 'close'], 'stop, then close: ' + calls.join(', '));
+        assert.ok(calls.indexOf('open:http://xt.example/live/u/p/2.ts') === -1, 'not opened at once');
+        await wait(200);
+        assert.ok(calls.indexOf('open:http://xt.example/live/u/p/2.ts') !== -1, 'opened after the wait');
+        ctx.Player.exit(); await wait();
+        ctx.Player.play({ url: 'http://xt.example/timeshift/u/p/60/2026-11-20:07-27/1.ts', stream: { url: 'x', _vod: true, _catchup: true }, type: 'tv', id: 'iptv:a', name: 'A' });
+        await wait();
+        assert.strictEqual(ctx.PlayerParts.S.isLive, false, 'a catch-up recording with no duration is not live');
+        ctx.Player.exit();
+    });
+
+    await runTest('An Xtream MPEG-TS channel falls back to its HLS link', async () => {
+        const ctx = iptvWith('#EXTM3U\n#EXTINF:-1 group-title="EU | TURK ULUSAL",TR| TRT 1 HD\nhttp://xt.example/live/u/p/101.ts\n' +
+            '#EXTINF:-1 group-title="EU | TURK ULUSAL",TR| SHOW TV FHD\nhttp://xt.example/live/u/p/201.ts\n#EXTINF:-1 group-title="EU | TURK ULUSAL",TR| SHOW TV HD\nhttp://xt.example/live/u/p/202.ts\n', { merge: 'best' });
+        const d = await ctx.IPTV.load();
+        const one = d.channels.filter((c) => /TRT/.test(c.name))[0], two = d.channels.filter((c) => /SHOW/.test(c.name))[0];
+        let l = await ctx.IPTV.streams(one.id);
+        assert.strictEqual(l.length, 1); assert.deepStrictEqual(Array.from(l[0]._fallbacks.map((x) => x.url)), ['http://xt.example/live/u/p/101.m3u8']);
+        l = await ctx.IPTV.streams(two.id);
+        assert.deepStrictEqual(Array.from([l[0].url].concat(l[0]._fallbacks.map((x) => x.url))),
+            ['http://xt.example/live/u/p/201.ts', 'http://xt.example/live/u/p/201.m3u8', 'http://xt.example/live/u/p/202.ts', 'http://xt.example/live/u/p/202.m3u8']);
     });
 
     await runTest('Live channel without sound or picture: first audio track, next copy, repack', async () => {
