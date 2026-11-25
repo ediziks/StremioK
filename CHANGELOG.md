@@ -6,6 +6,8 @@ What changed in each version of StremioK, newest first. How everything works is 
 ## Unreleased (ediziks' fork, on 2.4.10)
 - ***Countries first* takes a group's first word too**, such as VIP for "VIP | UEFA PPV": TR, UK,
   VIP, US puts those groups in that order.
+- **Best copy mode: every copy in the player's *Select source*** (Yellow), best first, though the
+  channel's page shows only the best one.
 
 ## 2.4.10 — 2026-11-24
 New:

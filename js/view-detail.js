@@ -2109,6 +2109,8 @@
     }
     // The player's "Select source" list: each source with the request headers it needs
     // (IPTV), so switching to it sends its own (or none).
+    // list: these instead of the page's (a merged channel's copies in Best copy mode: every one,
+    // best first, in the player's Select source, though only the best was shown to pick)
     function playableSources(list) {
         serverNow(list || _d.streams);
         return (list || _d.streams || []).filter(Stremio.isPlayable).map(function (st) {
@@ -2220,7 +2222,7 @@
             return;
         }
         var ctx = { url: stream.url, type: _d.type, addonType: _d.addonType, id: videoId, name: label, parent: _d.id,
-            poster: _d.meta.poster, background: _d.meta.background, streams: playableSources(), _headers: U.sanitizeHeaders(stream._headers) || undefined, zap: zap, zapTo: zap ? zapToChannel : null, zapList: lists, behindOk: behindOk,
+            poster: _d.meta.poster, background: _d.meta.background, streams: playableSources(_d.fallbacks || undefined), _headers: U.sanitizeHeaders(stream._headers) || undefined, zap: zap, zapTo: zap ? zapToChannel : null, zapList: lists, behindOk: behindOk,
             localSubs: stream._localSubs, localFile: stream._localFile,
             subExtra: fileHintsOf(stream), sourceSubs: sourceSubsOf(stream), formatInfo: Stremio.streamInfo(stream), fromStart: !!(how && how.fromStart) || undefined, viaService: !!(how && how.viaService) || undefined,
             titleIds: titleIdsOf(_d.meta, videoId), stream: stream, nextSource: nextSourceFor, liveFallbacks: !!(_d.fallbacks || (lists && (_d.streams || []).filter(Stremio.isPlayable).length > 1)) || undefined,   // (an IPTV channel's other copies, if this one doesn't play)
