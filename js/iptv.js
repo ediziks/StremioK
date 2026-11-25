@@ -1118,10 +1118,17 @@ var IPTV = (function () {
         });
     }
     // Countries first: the groups in your countries, in your order, then the rest as they were.
+    // An entry is a country (its code or name: "UK", "TURKEY") or a group's first word ("VIP" for
+    // "VIP | UEFA PPV"), so a provider's own sets of groups can be placed too.
+    function leadWord(name) { var m = /^[\s\[({|┃│#*=\-]*([A-Za-z0-9+]{2,12})(?=[\s:|\-┃│\/\])]|$)/.exec(String(name || '')); return m ? m[1].toUpperCase() : ''; }
     function groupOrder(groups) {
         var want = tidyCfg().countries.map(countryCode);
         if (!want.length) { return groups; }
-        return groups.map(function (g, i) { var at = want.indexOf(countryOf(g.name)); return { g: g, i: i, r: at === -1 ? want.length : at }; })
+        return groups.map(function (g, i) {
+            var cc = countryOf(g.name), lw = leadWord(g.name), at = -1;
+            for (var j = 0; j < want.length && at === -1; j++) { if (want[j] === cc || want[j] === lw) { at = j; } }
+            return { g: g, i: i, r: at === -1 ? want.length : at };
+        })
             .sort(function (a, b) { return a.r - b.r || a.i - b.i; }).map(function (x) { return x.g; });
     }
 

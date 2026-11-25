@@ -3,6 +3,10 @@
 What changed in each version of StremioK, newest first. How everything works is in the
 [user guide](docs/USER-GUIDE.md).
 
+## Unreleased (ediziks' fork, on 2.4.10)
+- ***Countries first* takes a group's first word too**, such as VIP for "VIP | UEFA PPV": TR, UK,
+  VIP, US puts those groups in that order.
+
 ## 2.4.10 — 2026-11-24
 New:
 - **Retry through StremioK's service:** an HLS source the TV refuses before it plays gets one
